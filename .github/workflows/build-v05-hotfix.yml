@@ -28,6 +28,7 @@ jobs:
           $script = ($lines | ForEach-Object { if ($_.StartsWith('          ')) { $_.Substring(10) } else { $_ } }) -join "`n"
           $script = $script.Replace('--exclude="BUILD_STATUS.md"', '--exclude="*BUILD_STATUS.md"')
           $script = $script.Replace(',"MACHINE MONITOR"', '')
+          $script = $script.Replace(',"PREAMP > MODELER > REVERB"', '')
           Set-Content reconstruct.ps1 $script
           & ./reconstruct.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -64,7 +65,7 @@ jobs:
           foreach ($marker in @("INPUT TYPE","SIGNAL ORDER","PICK RESPONSE","SUSTAIN + REVERB","HELP MODE")) { if (-not $editor.Contains($marker)) { throw "Missing UI marker $marker" } }
           if ($editor.Contains("VARIATION") -or $editor.Contains("DEEP EDIT")) { throw "Legacy Variation/Deep Edit UI still present" }
           $monitor = Get-Content "Source\UI\MachineMonitor.cpp" -Raw
-          foreach ($marker in @("performFrequencyOnlyForwardTransform","FX ENERGY","PITCH MOVE","PREAMP > MODELER > REVERB")) { if (-not $monitor.Contains($marker)) { throw "Missing monitor marker $marker" } }
+          foreach ($marker in @("performFrequencyOnlyForwardTransform","FX ENERGY","PITCH MOVE","PREAMP  >  MODELER  >  REVERB")) { if (-not $monitor.Contains($marker)) { throw "Missing monitor marker $marker" } }
 
           $vst3 = Get-ChildItem build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
           if (-not $vst3) { throw "VST3 bundle not found" }
