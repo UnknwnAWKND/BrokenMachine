@@ -7,6 +7,7 @@ on:
     branches: [ "main" ]
     paths:
       - "BrokenMachine-v0.1.0-source.zip"
+      - "patches/**"
       - ".github/workflows/build-windows.yml"
   pull_request:
     branches: [ "main" ]
@@ -19,13 +20,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract source project
+      - name: Extract source project and apply audited overrides
         shell: pwsh
         run: |
           Expand-Archive -Path "BrokenMachine-v0.1.0-source.zip" -DestinationPath "source" -Force
           if (-not (Test-Path "source\BrokenMachine\CMakeLists.txt")) {
             throw "Source archive did not extract to source\BrokenMachine as expected."
           }
+          Copy-Item -Path "patches\Source\Parameters\Parameters.cpp" -Destination "source\BrokenMachine\Source\Parameters\Parameters.cpp" -Force
+          Copy-Item -Path "patches\Source\DSP\WowFlutter.cpp" -Destination "source\BrokenMachine\Source\DSP\WowFlutter.cpp" -Force
 
       - name: Configure
         shell: pwsh
