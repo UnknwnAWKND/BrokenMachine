@@ -222,7 +222,27 @@ jobs:
 
           New-Item -ItemType Directory -Force package | Out-Null
           Copy-Item $vst3.FullName "package\Broken Machine.vst3" -Recurse
-          Copy-Item INSTALL.txt package\INSTALL.txt
+          @(
+            "BROKEN MACHINE v0.5.2 UI RECOVERY — WINDOWS / FL STUDIO",
+            "",
+            "INSTALL",
+            "1. Close FL Studio before replacing an existing Broken Machine build.",
+            '2. Extract this ZIP and copy the entire "Broken Machine.vst3" folder to your VST3 location.',
+            '   The common system location is C:\Program Files\Common Files\VST3.',
+            "3. Re-open FL Studio and rescan plugins if needed.",
+            "",
+            "UI RECOVERY",
+            "- Opens at a compact 1050 x 700 after FL Studio finishes restoring wrapper bounds.",
+            "- Remains resizable from 980 x 660 through 1600 x 1080.",
+            "- Every knob uses the same 88 x 112 component bounds and Input-knob visual design.",
+            "- Knob labels, values, descriptors and top controls use a uniform 12 px font.",
+            "- Card headings are 16.5 px and the old card subtitles are removed.",
+            "- The overview is packed into three rows; secondary controls remain available through MORE.",
+            "",
+            "SOUND / COMPATIBILITY",
+            "The audio processor, DSP algorithms, routing, factory presets, user presets and parameter state are unchanged from v0.5.2.",
+            "All 56 UI parameters remain reachable across the overview cards and MORE pages; all 74 state parameter IDs remain compatible."
+          ) | Set-Content package\INSTALL.txt
           Copy-Item BINARY_VALIDATION.txt package\BINARY_VALIDATION.txt
           Compress-Archive "package\*" "BrokenMachine-v0.5.2-UI-Recovery-Windows-VST3.zip" -Force
           Write-Host "Binary SHA-256: $binaryHash"
