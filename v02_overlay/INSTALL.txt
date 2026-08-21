@@ -1,0 +1,15 @@
+BROKEN MACHINE v0.2 — WINDOWS / FL STUDIO
+
+1. Extract this ZIP.
+2. Copy the entire "Broken Machine.vst3" folder to:
+   C:\Program Files\Common Files\VST3\
+3. Open FL Studio.
+4. Go to Options > Manage plugins.
+5. Click Find installed plugins.
+6. Search for Broken Machine.
+7. Load it on a Mixer insert and connect your guitar input.
+
+STARTING INPUT TIP
+Use INPUT so normal picking is healthy but not constantly smashing the input meter. The processor is designed to react to a large difference between gentle and hard playing. If every note is already clipped before the plugin, the PRESSURE / BREAKUP behavior has less room to work.
+
+No JUCE, CMake or Visual Studio installation is required to use the compiled VST3.
