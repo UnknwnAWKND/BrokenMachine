@@ -1,0 +1,55 @@
+name: Build Windows VST3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "BrokenMachine-v0.1.0-source.zip"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract source project
+        shell: pwsh
+        run: |
+          Expand-Archive -Path "BrokenMachine-v0.1.0-source.zip" -DestinationPath "source" -Force
+          if (-not (Test-Path "source\BrokenMachine\CMakeLists.txt")) {
+            throw "Source archive did not extract to source\BrokenMachine as expected."
+          }
+
+      - name: Configure
+        shell: pwsh
+        working-directory: source/BrokenMachine
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build VST3
+        shell: pwsh
+        working-directory: source/BrokenMachine
+        run: cmake --build build --config Release --target BrokenMachine_VST3 --parallel
+
+      - name: Package VST3
+        shell: pwsh
+        working-directory: source/BrokenMachine
+        run: |
+          $vst3 = Get-ChildItem -Path build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
+          if (-not $vst3) { throw "Built VST3 bundle was not found." }
+
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item -Path $vst3.FullName -Destination "package\Broken Machine.vst3" -Recurse
+          Copy-Item -Path "INSTALL.txt" -Destination "package\INSTALL.txt"
+          Compress-Archive -Path "package\*" -DestinationPath "BrokenMachine-Windows-VST3.zip" -Force
+
+      - name: Upload downloadable plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-Windows-VST3
+          path: source/BrokenMachine/BrokenMachine-Windows-VST3.zip
+          if-no-files-found: error
+          retention-days: 30
