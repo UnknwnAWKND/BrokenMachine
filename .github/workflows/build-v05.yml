@@ -1,0 +1,319 @@
+name: Build Windows VST3 v0.5.0 UX Clarity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "v0.5-ux-clarity" ]
+    paths:
+      - "v0.3-source-correct/**"
+      - "patches/v0.3.1-state-reset.patch"
+      - "patches/v0.4.0-research-pass.patch.gz.b64"
+      - "patches/v0.4.1-gui-chunks/**"
+      - "patches/v0.5.0-ux-clarity-chunks/**"
+      - ".github/workflows/build-v05.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Report start
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          @"
+          Broken Machine v0.5.0 UX/clarity Windows validation started.
+          Run ID: ${{ github.run_id }}
+          Commit: ${{ github.sha }}
+          Branch: ${{ github.ref_name }}
+          "@ | Set-Content start.txt
+          gh issue create --title "v0.5.0 build started #${{ github.run_attempt }}" --body-file start.txt
+
+      - name: Reconstruct verified v0.5 source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          try {
+            $names = @("part01.txt","part02.txt","part03.txt","part04.txt","part05a.txt","part05b1.txt","part05b2.txt","part05b3.txt","part06.txt")
+            $encoded = ""
+            foreach ($name in $names) {
+              $p = Join-Path "v0.3-source-correct" $name
+              if (-not (Test-Path $p)) { throw "Missing verified v0.3 source piece $p" }
+              $encoded += (Get-Content $p -Raw).Trim()
+            }
+            if ($encoded.Length -ne 69504) { throw "Unexpected v0.3 base64 length $($encoded.Length)" }
+            [IO.File]::WriteAllBytes("BrokenMachine-v0.3-source.zip", [Convert]::FromBase64String($encoded))
+            $baseHash = (Get-FileHash "BrokenMachine-v0.3-source.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($baseHash -ne "0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b") { throw "v0.3 base SHA mismatch: $baseHash" }
+            Expand-Archive "BrokenMachine-v0.3-source.zip" "source-root" -Force
+            $root = (Resolve-Path "source-root\BrokenMachine-v0.3").Path
+
+            & git apply --unsafe-paths --directory="source-root/BrokenMachine-v0.3" "patches/v0.3.1-state-reset.patch"
+            if ($LASTEXITCODE -ne 0) { throw "v0.3.1 stability patch failed: $LASTEXITCODE" }
+
+            function Expand-GzipPatch([string]$b64, [string]$gzipPath, [string]$patchPath) {
+              [IO.File]::WriteAllBytes($gzipPath, [Convert]::FromBase64String($b64))
+              $input = [IO.File]::OpenRead($gzipPath)
+              try {
+                $gzip = [IO.Compression.GZipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)
+                try {
+                  $output = [IO.File]::Create($patchPath)
+                  try { $gzip.CopyTo($output) } finally { $output.Dispose() }
+                } finally { $gzip.Dispose() }
+              } finally { $input.Dispose() }
+            }
+
+            $v04b64 = (Get-Content "patches\v0.4.0-research-pass.patch.gz.b64" -Raw).Trim()
+            $v04b64Hash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($v04b64)))).Replace('-','').ToLowerInvariant()
+            if ($v04b64Hash -ne "2683052682ebc7a7ba65317fe9059aae89d540155231b5d5270ac06626dbdb7b") { throw "v0.4 transport mismatch: $v04b64Hash" }
+            Expand-GzipPatch $v04b64 "v0.4.0.patch.gz" "v0.4.0.patch"
+            $v04GzipHash = (Get-FileHash "v0.4.0.patch.gz" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($v04GzipHash -ne "7bd0a05684b43717d6d059b21d6c928d6182d5e31827e7d8a7c54dd1029e3a92") { throw "v0.4 gzip mismatch: $v04GzipHash" }
+            $v04PatchHash = (Get-FileHash "v0.4.0.patch" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($v04PatchHash -ne "e7f29985f4cb0200454c4de4d8a89f17291ed4a475d0dbbe47327f0662135fae") { throw "v0.4 patch mismatch: $v04PatchHash" }
+            & git apply --unsafe-paths --directory="source-root/BrokenMachine-v0.3" "v0.4.0.patch"
+            if ($LASTEXITCODE -ne 0) { throw "v0.4 patch failed: $LASTEXITCODE" }
+
+            $v041b64 = ""
+            foreach ($name in @("part01.txt","part02.txt","part03.txt","part04.txt")) {
+              $v041b64 += (Get-Content (Join-Path "patches\v0.4.1-gui-chunks" $name) -Raw).Trim()
+            }
+            if ($v041b64.Length -ne 23096) { throw "Unexpected v0.4.1 payload length $($v041b64.Length)" }
+            $v041b64Hash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($v041b64)))).Replace('-','').ToLowerInvariant()
+            if ($v041b64Hash -ne "304964146d36316cd1d5b9f5f9129696f8fbef124c5b3b88e6ff098ba406ca4b") { throw "v0.4.1 transport mismatch: $v041b64Hash" }
+            Expand-GzipPatch $v041b64 "v0.4.1.patch.gz" "v0.4.1.patch"
+            $v041GzipHash = (Get-FileHash "v0.4.1.patch.gz" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($v041GzipHash -ne "6923b89277360743da55d1aad911eb9e11e564e08ccd3177cef9e685b8583148") { throw "v0.4.1 gzip mismatch: $v041GzipHash" }
+            $v041PatchHash = (Get-FileHash "v0.4.1.patch" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($v041PatchHash -ne "16e2ce0974108856ff087b61513778d9597293fa8fd295c5f6ec85425d78c7b3") { throw "v0.4.1 patch mismatch: $v041PatchHash" }
+            & git apply --unsafe-paths --directory="source-root/BrokenMachine-v0.3" "v0.4.1.patch"
+            if ($LASTEXITCODE -ne 0) { throw "v0.4.1 patch failed: $LASTEXITCODE" }
+
+            function Get-Core-Hash([string]$projectRoot) {
+              $files = @(
+                Get-ChildItem (Join-Path $projectRoot "Source\DSP") -Recurse -File
+                Get-ChildItem (Join-Path $projectRoot "Source\Parameters") -Recurse -File
+              )
+              $rels = @($files | ForEach-Object { $_.FullName.Substring($projectRoot.Length + 1).Replace('\','/') })
+              [Array]::Sort($rels, [StringComparer]::Ordinal)
+              $manifest = ""
+              foreach ($rel in $rels) {
+                $h = (Get-FileHash (Join-Path $projectRoot $rel.Replace('/','\')) -Algorithm SHA256).Hash.ToLowerInvariant()
+                $manifest += "$h  $rel`n"
+              }
+              return ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($manifest)))).Replace('-','').ToLowerInvariant()
+            }
+            $coreBefore = Get-Core-Hash $root
+
+            $v05b64 = ""
+            foreach ($name in @("part01.txt","part02.txt","part03.txt","part04.txt","part05.txt")) {
+              $p = Join-Path "patches\v0.5.0-ux-clarity-chunks" $name
+              if (-not (Test-Path $p)) { throw "Missing v0.5 payload piece $p" }
+              $v05b64 += (Get-Content $p -Raw).Trim()
+            }
+            if ($v05b64.Length -ne 54608) { throw "Unexpected v0.5 payload length $($v05b64.Length)" }
+            $v05b64Hash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($v05b64)))).Replace('-','').ToLowerInvariant()
+            if ($v05b64Hash -ne "8ad936a810b84aafaafa00e73cf0554e8a8e85a0d3dfd707c17a2fb405f9fc05") { throw "v0.5 transport mismatch: $v05b64Hash" }
+            Expand-GzipPatch $v05b64 "v0.5.0.patch.gz" "v0.5.0.patch"
+            $v05GzipHash = (Get-FileHash "v0.5.0.patch.gz" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($v05GzipHash -ne "f20db462da3299982b970138015feabfac533e8ad3281e7fbca6b85510a8d944") { throw "v0.5 gzip mismatch: $v05GzipHash" }
+            $v05PatchHash = (Get-FileHash "v0.5.0.patch" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($v05PatchHash -ne "bf92e5aeba42bd947f48b1dc75a36f5a7ae8bf835bf1b0197b47281ed9f40d6f") { throw "v0.5 patch mismatch: $v05PatchHash" }
+
+            $allowed = @(
+              ".github/workflows/build-windows.yml","BUILD_STATUS.md","BUILD_WINDOWS.bat","CMakeLists.txt","INSTALL.txt","README.md",
+              "Source/PluginEditor.cpp","Source/PluginEditor.h","Source/PluginProcessor.cpp","Source/PluginProcessor.h",
+              "Source/UI/MachineMonitor.cpp","Source/UI/MachineMonitor.h"
+            )
+            $changed = @(& git apply --numstat "v0.5.0.patch" | ForEach-Object { ($_ -split "`t")[-1].Replace('\','/') })
+            $unexpected = @($changed | Where-Object { $_ -notin $allowed })
+            if ($unexpected.Count) { throw "v0.5 patch touches unexpected paths: $($unexpected -join ', ')" }
+            if ($changed.Count -ne 12) { throw "Expected 12 v0.5 paths, patch contains $($changed.Count)" }
+
+            & git apply --unsafe-paths --directory="source-root/BrokenMachine-v0.3" "v0.5.0.patch"
+            if ($LASTEXITCODE -ne 0) { throw "v0.5 patch failed: $LASTEXITCODE" }
+
+            $coreAfter = Get-Core-Hash $root
+            if ($coreAfter -ne $coreBefore) { throw "CORE DSP/PARAMETERS CHANGED: before=$coreBefore after=$coreAfter" }
+            $cmake = Get-Content (Join-Path $root "CMakeLists.txt") -Raw
+            if (-not $cmake.Contains("VERSION 0.5.0")) { throw "CMake version is not 0.5.0" }
+            $editor = Get-Content (Join-Path $root "Source\PluginEditor.cpp") -Raw
+            foreach ($marker in @("INPUT TYPE","SIGNAL ORDER","PICK RESPONSE","SUSTAIN + REVERB","HELP MODE","MACHINE MONITOR")) {
+              if (-not $editor.Contains($marker)) { throw "Missing v0.5 editor marker '$marker'" }
+            }
+            if ($editor.Contains("VARIATION")) { throw "Variation control still present in v0.5 editor" }
+            if ($editor.Contains("DEEP EDIT")) { throw "Old global Deep Edit UI still present" }
+            $monitor = Get-Content (Join-Path $root "Source\UI\MachineMonitor.cpp") -Raw
+            foreach ($marker in @("performFrequencyOnlyForwardTransform","FX ENERGY","PITCH MOVE","PREAMP > MODELER > REVERB")) {
+              if (-not $monitor.Contains($marker)) { throw "Missing Machine Monitor marker '$marker'" }
+            }
+            $processor = Get-Content (Join-Path $root "Source\PluginProcessor.cpp") -Raw
+            foreach ($marker in @("copyAnalysisData","analysisInput","transientMeter","fxEnergyMeter")) {
+              if (-not $processor.Contains($marker)) { throw "Missing passive analysis marker '$marker'" }
+            }
+            @(
+              "Base source SHA-256: $baseHash","v0.4 patch SHA-256: $v04PatchHash","v0.4.1 patch SHA-256: $v041PatchHash",
+              "v0.5 patch SHA-256: $v05PatchHash","Core DSP/parameters manifest before/after v0.5: $coreBefore",
+              "v0.5 changed paths: $($changed -join ', ')"
+            ) | Set-Content source-validation.txt
+            Get-Content source-validation.txt
+          }
+          catch {
+            @("Stage: source reconstruction / v0.5 invariant","Message: $($_.Exception.Message)","",($_ | Out-String)) | Set-Content build-error.txt
+            throw
+          }
+
+      - name: Configure VS2022 x64
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Continue"
+          & cmake -S . -B build -G "Visual Studio 17 2022" -A x64 *> configure.log
+          $c = $LASTEXITCODE
+          Get-Content configure.log
+          if ($c -ne 0) { @("Stage: CMake configure","Exit code: $c","",(Get-Content configure.log -Tail 300)) | Set-Content "..\..\build-error.txt"; exit $c }
+
+      - name: Build VST3 Release
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Continue"
+          & cmake --build build --config Release --target BrokenMachine_VST3 --parallel *> build.log
+          $c = $LASTEXITCODE
+          Get-Content build.log
+          if ($c -ne 0) { @("Stage: C++ / VST3 compilation","Exit code: $c","",(Get-Content build.log -Tail 500)) | Set-Content "..\..\build-error.txt"; exit $c }
+
+      - name: Static source audit
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          try {
+            $header = Get-Content "Source\Parameters\Parameters.h" -Raw
+            $ids = [regex]::Matches($header, 'inline constexpr auto\s+(\w+)\s*=') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+            if ($ids.Count -ne 74) { throw "Expected 74 parameter IDs, found $($ids.Count)" }
+            $refs = @()
+            Get-ChildItem Source -Recurse -Include *.cpp,*.h | ForEach-Object {
+              $t = Get-Content $_.FullName -Raw
+              [regex]::Matches($t, 'Params::ID::(\w+)') | ForEach-Object { $refs += $_.Groups[1].Value }
+            }
+            $undefined = @($refs | Sort-Object -Unique | Where-Object { $_ -notin $ids })
+            if ($undefined.Count) { throw "Undefined parameter refs: $($undefined -join ', ')" }
+            $processor = Get-Content "Source\PluginProcessor.cpp" -Raw
+            foreach ($route in @("case 0:","case 1:","case 2:","case 3:")) { if (-not $processor.Contains($route)) { throw "Missing route $route" } }
+            foreach ($preset in @("Soft Focus","Baritone Wire","Distorted Halo","Synthetic Wire","Hairline","Ghost Bloom","Unstable Clean","Machine Collapse")) {
+              if (-not $processor.Contains($preset)) { throw "Missing factory tone $preset" }
+            }
+            Write-Host "Static audit passed: 74 parameters, four rig paths, factory tones intact."
+          }
+          catch { @("Stage: static source audit","Message: $($_.Exception.Message)","",($_ | Out-String)) | Set-Content "..\..\build-error.txt"; throw }
+
+      - name: Validate and package binary
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          try {
+            $vst3 = Get-ChildItem build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
+            if (-not $vst3) { throw "VST3 bundle not found" }
+            $bin = Get-ChildItem $vst3.FullName -Recurse -File | Where-Object { $_.Name -eq "Broken Machine.vst3" -or $_.Extension -eq ".dll" } | Select-Object -First 1
+            if (-not $bin) { throw "VST3 processor binary not found" }
+            $bytes = [IO.File]::ReadAllBytes($bin.FullName)
+            if ($bytes.Length -lt 512 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw "Binary is not Windows MZ/PE" }
+            $pe = [BitConverter]::ToInt32($bytes,0x3c)
+            if ($bytes[$pe] -ne 0x50 -or $bytes[$pe+1] -ne 0x45) { throw "Invalid PE signature" }
+            if ([BitConverter]::ToUInt16($bytes,$pe+4) -ne 0x8664) { throw "Binary is not x86-64" }
+            $vi = (Get-Item $bin.FullName).VersionInfo
+            $version = $vi.ProductVersion
+            if ([string]::IsNullOrWhiteSpace($version)) { $version = $vi.FileVersion }
+            if ([string]::IsNullOrWhiteSpace($version) -or -not $version.StartsWith("0.5.0")) { throw "Unexpected version '$version'" }
+            $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+            $checks = @("Soft Focus","Distorted Halo","Hairline","Ghost Bloom","Unstable Clean","Machine Collapse","BROKEN MACHINE","INPUT TYPE","SIGNAL ORDER","MACHINE MONITOR","PICK RESPONSE","GetPluginFactory","InitDll","ExitDll")
+            $missing = @($checks | Where-Object { -not $ascii.Contains($_) })
+            if ($missing.Count) { throw "Missing expected binary strings: $($missing -join ', ')" }
+            $module = Get-ChildItem $vst3.FullName -Recurse -File -Filter "moduleinfo.json" | Select-Object -First 1
+            if (-not $module) { throw "moduleinfo.json missing" }
+            $moduleText = Get-Content $module.FullName -Raw
+            if (-not $moduleText.Contains('"Version": "0.5.0"')) { throw "moduleinfo is not version 0.5.0" }
+            $binHash = (Get-FileHash $bin.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            @("Broken Machine v0.5.0 validation","PE machine: 0x8664 x86-64","Version: $version","Binary SHA-256: $binHash","Core DSP and parameter definitions unchanged from v0.4.1") | Set-Content BINARY_VALIDATION.txt
+            New-Item -ItemType Directory -Force package | Out-Null
+            Copy-Item $vst3.FullName "package\Broken Machine.vst3" -Recurse
+            Copy-Item INSTALL.txt package\INSTALL.txt
+            if (Test-Path RESEARCH.md) { Copy-Item RESEARCH.md package\RESEARCH.md }
+            Copy-Item BINARY_VALIDATION.txt package\BINARY_VALIDATION.txt
+            Compress-Archive "package\*" "BrokenMachine-v0.5.0-Windows-VST3.zip" -Force
+            Write-Host "Validated v0.5.0 binary SHA-256: $binHash"
+          }
+          catch { @("Stage: binary validation / packaging","Message: $($_.Exception.Message)","",($_ | Out-String)) | Set-Content "..\..\build-error.txt"; throw }
+
+      - name: Package clean source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $src = (Resolve-Path "source-root\BrokenMachine-v0.3").Path
+          $dst = Join-Path (Get-Location) "source-package\BrokenMachine-v0.5.0"
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          Get-ChildItem $src -Recurse -File | Where-Object {
+            $_.FullName -notmatch '\\build\\' -and $_.FullName -notmatch '\\package\\' -and
+            $_.Extension -notin @('.log','.zip','.obj','.pdb','.dll','.exe') -and $_.Name -ne 'BINARY_VALIDATION.txt'
+          } | ForEach-Object {
+            $rel = $_.FullName.Substring($src.Length + 1)
+            $target = Join-Path $dst $rel
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            Copy-Item $_.FullName $target
+          }
+          Compress-Archive "source-package\BrokenMachine-v0.5.0" "BrokenMachine-v0.5.0-source.zip" -Force
+
+      - name: Upload plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.5.0-Windows-VST3
+          path: source-root/BrokenMachine-v0.3/BrokenMachine-v0.5.0-Windows-VST3.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload clean source
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.5.0-Source
+          path: BrokenMachine-v0.5.0-source.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Report success
+        if: success()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          @"
+          Broken Machine v0.5.0 UX/clarity Windows build succeeded.
+          Run ID: ${{ github.run_id }}
+          Commit: ${{ github.sha }}
+          Core DSP/parameter definitions preserved from v0.4.1; passive Machine Monitor taps added only.
+          "@ | Set-Content success.txt
+          gh issue create --title "v0.5.0 build SUCCESS #${{ github.run_attempt }}" --body-file success.txt
+
+      - name: Report failure
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $detail = if (Test-Path build-error.txt) { Get-Content build-error.txt -Raw } else { "See Actions logs for the failed stage." }
+          @"
+          Broken Machine v0.5.0 Windows build failed.
+          Run ID: ${{ github.run_id }}
+          Commit: ${{ github.sha }}
+
+          $detail
+          "@ | Set-Content failure.txt
+          gh issue create --title "v0.5.0 build FAILURE #${{ github.run_attempt }}" --body-file failure.txt
