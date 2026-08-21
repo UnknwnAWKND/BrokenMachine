@@ -1,0 +1,235 @@
+name: Build Windows VST3 v0.5.2 UI Recovery
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - v0.5.2-ui-recovery
+    paths:
+      - "patches/v0.5.2-ui-recovery.zip.b64"
+      - ".github/workflows/build-v052-recovery.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reconstruct verified v0.5.2 source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $yaml = Get-Content ".github/workflows/build-v05-hotfix.yml" -Raw
+          $m = [regex]::Match($yaml, '(?ms)^      - name: Reconstruct v0\.5\.1 and apply verified v0\.5\.2\r?\n.*?^        run: \|\r?\n(?<script>.*?)(?=^      - name: Static UI and compatibility audit)')
+          if (-not $m.Success) { throw "Could not extract verified v0.5.2 reconstruction step" }
+          $lines = $m.Groups['script'].Value -split "`r?`n"
+          $script = ($lines | ForEach-Object { if ($_.StartsWith('          ')) { $_.Substring(10) } else { $_ } }) -join "`n"
+          Set-Content reconstruct-v052.ps1 $script
+          & ./reconstruct-v052.ps1
+          if ($LASTEXITCODE -ne 0) { throw "v0.5.2 reconstruction failed: $LASTEXITCODE" }
+
+      - name: Install compact uniform UI recovery
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = (Resolve-Path "source-root\BrokenMachine-v0.3").Path
+
+          function Get-EngineManifestHash([string]$projectRoot) {
+            $files = @(
+              Get-Item (Join-Path $projectRoot "Source\PluginProcessor.cpp")
+              Get-Item (Join-Path $projectRoot "Source\PluginProcessor.h")
+              Get-ChildItem (Join-Path $projectRoot "Source\DSP") -Recurse -File
+              Get-ChildItem (Join-Path $projectRoot "Source\Parameters") -Recurse -File
+            )
+            $rels = @($files | ForEach-Object { $_.FullName.Substring($projectRoot.Length + 1).Replace('\','/') })
+            [Array]::Sort($rels, [StringComparer]::Ordinal)
+            $manifest = ""
+            foreach ($rel in $rels) {
+              $h = (Get-FileHash (Join-Path $projectRoot $rel.Replace('/','\')) -Algorithm SHA256).Hash.ToLowerInvariant()
+              $manifest += "$h  $rel`n"
+            }
+            return ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($manifest)))).Replace('-','').ToLowerInvariant()
+          }
+
+          $engineBefore = Get-EngineManifestHash $root
+          $transport = (Get-Content "patches\v0.5.2-ui-recovery.zip.b64" -Raw).Trim()
+          if ($transport.Length -ne 22612) { throw "Recovery payload length $($transport.Length), expected 22612" }
+          $transportHash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($transport)))).Replace('-','').ToLowerInvariant()
+          if ($transportHash -ne "291ddfe5a1579e5f17e5775b64909bad0094a897f1119f74f53597996aa79716") {
+            throw "Recovery transport hash mismatch: $transportHash"
+          }
+
+          [IO.File]::WriteAllBytes("ui-recovery.zip", [Convert]::FromBase64String($transport))
+          $zipHash = (Get-FileHash "ui-recovery.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($zipHash -ne "f1160cfd24e5ef7595dd4305eab891a3f16f28ae52b59d79bd0a2e8479078702") {
+            throw "Recovery ZIP hash mismatch: $zipHash"
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "ui-recovery.zip").Path)
+          try {
+            $entries = @($zip.Entries | Where-Object { $_.Name } | ForEach-Object { $_.FullName.Replace('\','/') } | Sort-Object)
+          } finally {
+            $zip.Dispose()
+          }
+          $allowed = @(
+            "Source/PluginEditor.cpp",
+            "Source/PluginEditor.h",
+            "Source/UI/CustomLookAndFeel.cpp",
+            "Source/UI/CustomLookAndFeel.h"
+          ) | Sort-Object
+          if (($entries -join "`n") -ne ($allowed -join "`n")) {
+            throw "Unexpected recovery archive paths: $($entries -join ', ')"
+          }
+
+          Expand-Archive "ui-recovery.zip" -DestinationPath $root -Force
+          $engineAfter = Get-EngineManifestHash $root
+          if ($engineAfter -ne $engineBefore) { throw "Audio engine changed: $engineBefore -> $engineAfter" }
+          "Recovery archive SHA-256: $zipHash" | Add-Content source-validation.txt
+          "Audio engine manifest unchanged after UI recovery: $engineAfter" | Add-Content source-validation.txt
+          Get-Content source-validation.txt
+
+      - name: Static UI and compatibility audit
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cmake = Get-Content "CMakeLists.txt" -Raw
+          if (-not $cmake.Contains("VERSION 0.5.2")) { throw "CMake version is not 0.5.2" }
+          if (-not $cmake.Contains('COMPANY_NAME "UnknwnAWKND"')) { throw "Vendor metadata changed" }
+
+          $editor = Get-Content "Source\PluginEditor.cpp" -Raw
+          $header = Get-Content "Source\PluginEditor.h" -Raw
+          $laf = Get-Content "Source\UI\CustomLookAndFeel.cpp" -Raw
+          $lafHeader = Get-Content "Source\UI\CustomLookAndFeel.h" -Raw
+          $allUi = $editor + "`n" + $header + "`n" + $laf + "`n" + $lafHeader
+
+          foreach ($marker in @(
+            "setResizeLimits (980, 660, 1600, 1080)",
+            "setSize (1050, 700)",
+            "startupSizeTicks == 2",
+            "startupSizeTicks == 9",
+            "slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 88, 22)",
+            'slider.getProperties().set ("bmMacro", true)',
+            'slider.getProperties().set ("bmWarm", false)',
+            "uiFont (16.5f, juce::Font::bold)",
+            "getModuleCardBounds",
+            'juce::TextButton moreButton { "MORE" }',
+            "showModuleDetail",
+            "SUSTAIN + REVERB",
+            "OUTPUT + MODEL"
+          )) {
+            if (-not $allUi.Contains($marker)) { throw "Missing recovery UI marker '$marker'" }
+          }
+
+          $uniformBounds = [regex]::Matches($editor, 'Rectangle<int> \(88, 112\)').Count
+          if ($uniformBounds -ne 2) { throw "Expected uniform 88x112 bounds in both main/detail layouts, found $uniformBounds" }
+          if ([regex]::IsMatch($editor + "`n" + $laf, 'uiFont\s*\((?:7|8|9|10|11)\.')) {
+            throw "Sub-12px control text remains in the recovered UI"
+          }
+          foreach ($removed in @(
+            "moduleSubtitles",
+            "LEVEL / REACTIVE RESPONSE",
+            "DYNAMICS / PICK SHAPE / DENSITY",
+            "PREAMP / DISTORTION / TEXTURE",
+            "NOTE DECAY / AMBIENCE / GHOST",
+            "MICRO-PITCH / WOW / FLUTTER / DRIFT",
+            "FILTERS / BODY / BITE / SPEAKER",
+            "SYNTHETIC LAYER / FEEDBACK / FINAL MIX"
+          )) {
+            if ($allUi.Contains($removed)) { throw "Removed card subtitle remains: $removed" }
+          }
+
+          $moduleBindings = [regex]::Matches($editor, 'addModuleKnob \([^\r\n]+Params::ID::(\w+)') | ForEach-Object { $_.Groups[1].Value }
+          $detailBindings = [regex]::Matches($editor, 'addDetailKnob \([^\r\n]+Params::ID::(\w+)') | ForEach-Object { $_.Groups[1].Value }
+          if ($moduleBindings.Count -ne 25) { throw "Expected 25 main-card knob bindings, found $($moduleBindings.Count)" }
+          if ($detailBindings.Count -ne 35) { throw "Expected 35 detail-page knob bindings, found $($detailBindings.Count)" }
+          $visible = @($moduleBindings) + @($detailBindings)
+          if (($visible | Sort-Object -Unique).Count -ne 56) { throw "Expected 56 unique UI parameters" }
+
+          $paramsHeader = Get-Content "Source\Parameters\Parameters.h" -Raw
+          $ids = [regex]::Matches($paramsHeader, 'inline constexpr auto\s+(\w+)\s*=') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+          if ($ids.Count -ne 74) { throw "Expected 74 parameter IDs, found $($ids.Count)" }
+          $undefined = @($visible | Sort-Object -Unique | Where-Object { $_ -notin $ids })
+          if ($undefined.Count) { throw "Undefined UI parameter refs: $($undefined -join ', ')" }
+
+          $processor = Get-Content "Source\PluginProcessor.cpp" -Raw
+          foreach ($marker in @("case 0:","case 1:","case 2:","case 3:","Hairline","Ghost Bloom","Unstable Clean","Machine Collapse","saveUserPreset","loadUserPreset")) {
+            if (-not $processor.Contains($marker)) { throw "Missing processor marker '$marker'" }
+          }
+
+      - name: Configure VS2022 x64
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build VST3 Release
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake --build build --config Release --target BrokenMachine_VST3 --parallel
+
+      - name: Validate and package recovered VST3
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vst3 = Get-ChildItem build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
+          if (-not $vst3) { throw "VST3 bundle not found" }
+          $binary = Get-ChildItem $vst3.FullName -Recurse -File | Where-Object { $_.Name -eq "Broken Machine.vst3" -or $_.Extension -eq ".dll" } | Select-Object -First 1
+          if (-not $binary) { throw "VST3 binary not found" }
+
+          $bytes = [IO.File]::ReadAllBytes($binary.FullName)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a -or [BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) {
+            throw "Binary is not PE32+ x86-64"
+          }
+          $vi = (Get-Item $binary.FullName).VersionInfo
+          $version = if ($vi.ProductVersion) { $vi.ProductVersion } else { $vi.FileVersion }
+          if (-not $version.StartsWith("0.5.2")) { throw "Unexpected binary version $version" }
+
+          $module = Get-ChildItem $vst3.FullName -Recurse -Filter moduleinfo.json | Select-Object -First 1
+          if (-not $module) { throw "moduleinfo.json not found" }
+          $moduleText = Get-Content $module.FullName -Raw
+          if (-not $moduleText.Contains('"Version": "0.5.2"') -or -not $moduleText.Contains("UnknwnAWKND")) {
+            throw "moduleinfo metadata mismatch"
+          }
+
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($marker in @("GetPluginFactory","InitDll","ExitDll","UnknwnAWKND","SUSTAIN + REVERB","OUTPUT + MODEL")) {
+            if (-not $ascii.Contains($marker)) { throw "Missing binary marker '$marker'" }
+          }
+          if ($ascii.Contains("PREAMP / DISTORTION / TEXTURE")) { throw "Removed card subtitles survived compilation" }
+
+          $binaryHash = (Get-FileHash $binary.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "Broken Machine v0.5.2 UI recovery validation",
+            "PE32+ x86-64",
+            "Version: $version",
+            "Vendor: UnknwnAWKND",
+            "Binary SHA-256: $binaryHash",
+            "Audio processor, DSP, parameters and presets unchanged",
+            "Compact startup: 1050 x 700 with delayed FL Studio reassertion",
+            "Uniform knob component bounds: 88 x 112",
+            "Uniform control/readout font: 12 px",
+            "Card heading font: 16.5 px",
+            "All 56 UI parameters retained across main cards and MORE pages",
+            "Legacy card subtitles removed"
+          ) | Set-Content BINARY_VALIDATION.txt
+
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item $vst3.FullName "package\Broken Machine.vst3" -Recurse
+          Copy-Item INSTALL.txt package\INSTALL.txt
+          Copy-Item BINARY_VALIDATION.txt package\BINARY_VALIDATION.txt
+          Compress-Archive "package\*" "BrokenMachine-v0.5.2-UI-Recovery-Windows-VST3.zip" -Force
+          Write-Host "Binary SHA-256: $binaryHash"
+
+      - name: Upload recovered plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.5.2-UI-Recovery-Windows-VST3
+          path: source-root/BrokenMachine-v0.3/BrokenMachine-v0.5.2-UI-Recovery-Windows-VST3.zip
+          if-no-files-found: error
