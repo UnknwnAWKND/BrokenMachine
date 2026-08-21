@@ -1,0 +1,35 @@
+name: Diagnose v0.3 transferred source tree
+on:
+  push:
+    branches: [ "v0.3-tone-overhaul" ]
+    paths: [ ".github/workflows/diagnose-v03-tree.yml" ]
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract and print file hashes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $parts = @(
+            "v0.3-source-chunks/BrokenMachine-v0.3-source.b64.part01",
+            "v0.3-source-chunks/BrokenMachine-v0.3-source.b64.part02",
+            "v0.3-source-chunks/BrokenMachine-v0.3-source.b64.part03",
+            "v0.3-source-chunks/BrokenMachine-v0.3-source.b64.part04"
+          )
+          $encoded = (($parts | ForEach-Object { Get-Content $_ -Raw }) -join "").Trim()
+          [IO.File]::WriteAllBytes("source.zip", [Convert]::FromBase64String($encoded))
+          New-Item -ItemType Directory -Force source-root | Out-Null
+          Expand-Archive source.zip -DestinationPath source-root -Force
+          $root = (Resolve-Path "source-root/BrokenMachine-v0.3").Path
+          $files = @(Get-ChildItem $root -Recurse -File)
+          $rels = @($files | ForEach-Object { $_.FullName.Substring($root.Length + 1).Replace('\','/') })
+          [Array]::Sort($rels, [StringComparer]::Ordinal)
+          Write-Host "FILE_COUNT=$($rels.Count)"
+          foreach ($rel in $rels) {
+            $hash = (Get-FileHash (Join-Path $root $rel.Replace('/','\')) -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host "$hash  $rel"
+          }
