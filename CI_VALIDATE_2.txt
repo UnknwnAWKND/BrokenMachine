@@ -1,0 +1,1 @@
+Second synchronization marker to force GitHub Actions pull_request validation.
