@@ -1,6 +1,5 @@
 name: Build Windows VST3
 
-# BrokenMachine automated Windows compiler/build pipeline.
 on:
   workflow_dispatch:
   push:
@@ -9,8 +8,10 @@ on:
       - "BrokenMachine-v0.1.0-source.zip"
       - "patches/**"
       - ".github/workflows/build-windows.yml"
-  pull_request:
-    branches: [ "main" ]
+
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   build-windows-vst3:
@@ -23,70 +24,133 @@ jobs:
       - name: Decode source archive, extract project, and apply audited overrides
         shell: pwsh
         run: |
-          $storedArchive = "BrokenMachine-v0.1.0-source.zip"
-          if (-not (Test-Path $storedArchive)) {
-            throw "Stored source archive was not found."
-          }
-
-          # The GitHub connector stored the ZIP payload as base64 text. Detect that
-          # representation and reconstruct a real ZIP before Expand-Archive. This also
-          # remains compatible if the repository later contains a normal binary ZIP.
-          $bytes = [System.IO.File]::ReadAllBytes($storedArchive)
-          $isZip = $bytes.Length -ge 2 -and $bytes[0] -eq 0x50 -and $bytes[1] -eq 0x4B
-
-          if ($isZip) {
-            $realArchive = $storedArchive
-            Write-Host "Source archive is already a binary ZIP."
-          }
-          else {
-            Write-Host "Source archive is base64 text; decoding it first."
-            $encoded = [System.Text.Encoding]::UTF8.GetString($bytes) -replace '\s', ''
-            try {
-              $decoded = [System.Convert]::FromBase64String($encoded)
-            }
-            catch {
-              throw "Source archive was neither a binary ZIP nor valid base64 text. $($_.Exception.Message)"
+          $ErrorActionPreference = "Stop"
+          try {
+            Remove-Item "build-error.txt" -ErrorAction SilentlyContinue
+            $storedArchive = "BrokenMachine-v0.1.0-source.zip"
+            if (-not (Test-Path $storedArchive)) {
+              throw "Stored source archive was not found."
             }
 
-            $realArchive = "BrokenMachine-source-decoded.zip"
-            [System.IO.File]::WriteAllBytes($realArchive, $decoded)
+            $bytes = [System.IO.File]::ReadAllBytes($storedArchive)
+            $isZip = $bytes.Length -ge 4 -and $bytes[0] -eq 0x50 -and $bytes[1] -eq 0x4B
 
-            $decodedBytes = [System.IO.File]::ReadAllBytes($realArchive)
-            if ($decodedBytes.Length -lt 2 -or $decodedBytes[0] -ne 0x50 -or $decodedBytes[1] -ne 0x4B) {
-              throw "Decoded source payload is not a valid ZIP header."
+            if ($isZip) {
+              $realArchive = $storedArchive
+              Write-Host "Source archive is already a binary ZIP."
             }
+            else {
+              Write-Host "Source archive is text; attempting base64 decode."
+              $encoded = [System.Text.Encoding]::UTF8.GetString($bytes)
+              $encoded = ($encoded -replace '\s', '').Trim()
+              if ([string]::IsNullOrWhiteSpace($encoded)) {
+                throw "Stored source archive was empty after whitespace removal."
+              }
+
+              try {
+                $decoded = [System.Convert]::FromBase64String($encoded)
+              }
+              catch {
+                throw "Source archive was neither a binary ZIP nor valid base64 text: $($_.Exception.Message)"
+              }
+
+              $realArchive = "BrokenMachine-source-decoded.zip"
+              [System.IO.File]::WriteAllBytes($realArchive, $decoded)
+            }
+
+            $zipBytes = [System.IO.File]::ReadAllBytes($realArchive)
+            if ($zipBytes.Length -lt 4 -or $zipBytes[0] -ne 0x50 -or $zipBytes[1] -ne 0x4B) {
+              throw "Reconstructed source payload does not have a ZIP signature. First bytes: $([BitConverter]::ToString($zipBytes[0..([Math]::Min(15,$zipBytes.Length-1))]))"
+            }
+
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $testZip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $realArchive))
+            Write-Host "ZIP opened successfully. Entries: $($testZip.Entries.Count)"
+            $testZip.Dispose()
+
+            Expand-Archive -LiteralPath $realArchive -DestinationPath "source" -Force
+
+            if (-not (Test-Path "source\BrokenMachine\CMakeLists.txt")) {
+              Write-Host "Extracted directory listing:"
+              Get-ChildItem -Path source -Recurse -Depth 2 | Select-Object FullName | Format-Table -AutoSize
+              throw "Source archive extracted, but source\BrokenMachine\CMakeLists.txt was not found."
+            }
+
+            Copy-Item -Path "patches\Source\Parameters\Parameters.cpp" -Destination "source\BrokenMachine\Source\Parameters\Parameters.cpp" -Force
+            Copy-Item -Path "patches\Source\DSP\WowFlutter.cpp" -Destination "source\BrokenMachine\Source\DSP\WowFlutter.cpp" -Force
           }
-
-          Expand-Archive -LiteralPath $realArchive -DestinationPath "source" -Force
-
-          if (-not (Test-Path "source\BrokenMachine\CMakeLists.txt")) {
-            throw "Source archive did not extract to source\BrokenMachine as expected."
+          catch {
+            @(
+              "Stage: source extraction / override application"
+              "Message: $($_.Exception.Message)"
+              ""
+              "PowerShell details:"
+              ($_ | Out-String)
+            ) | Set-Content "build-error.txt"
+            throw
           }
-
-          Copy-Item -Path "patches\Source\Parameters\Parameters.cpp" -Destination "source\BrokenMachine\Source\Parameters\Parameters.cpp" -Force
-          Copy-Item -Path "patches\Source\DSP\WowFlutter.cpp" -Destination "source\BrokenMachine\Source\DSP\WowFlutter.cpp" -Force
 
       - name: Configure
         shell: pwsh
         working-directory: source/BrokenMachine
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        run: |
+          $ErrorActionPreference = "Continue"
+          & cmake -S . -B build -G "Visual Studio 17 2022" -A x64 *> configure.log
+          $code = $LASTEXITCODE
+          Get-Content configure.log
+          if ($code -ne 0) {
+            @(
+              "Stage: CMake configure"
+              "Exit code: $code"
+              ""
+              "Last configure log lines:"
+              (Get-Content configure.log -Tail 200)
+            ) | Set-Content "..\..\build-error.txt"
+            exit $code
+          }
 
       - name: Build VST3
         shell: pwsh
         working-directory: source/BrokenMachine
-        run: cmake --build build --config Release --target BrokenMachine_VST3 --parallel
+        run: |
+          $ErrorActionPreference = "Continue"
+          & cmake --build build --config Release --target BrokenMachine_VST3 --parallel *> build.log
+          $code = $LASTEXITCODE
+          Get-Content build.log
+          if ($code -ne 0) {
+            @(
+              "Stage: C++ / VST3 compilation"
+              "Exit code: $code"
+              ""
+              "Last compiler log lines:"
+              (Get-Content build.log -Tail 250)
+            ) | Set-Content "..\..\build-error.txt"
+            exit $code
+          }
 
       - name: Package VST3
         shell: pwsh
         working-directory: source/BrokenMachine
         run: |
-          $vst3 = Get-ChildItem -Path build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
-          if (-not $vst3) { throw "Built VST3 bundle was not found." }
+          $ErrorActionPreference = "Stop"
+          try {
+            $vst3 = Get-ChildItem -Path build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
+            if (-not $vst3) { throw "Built VST3 bundle was not found." }
 
-          New-Item -ItemType Directory -Force -Path package | Out-Null
-          Copy-Item -Path $vst3.FullName -Destination "package\Broken Machine.vst3" -Recurse
-          Copy-Item -Path "INSTALL.txt" -Destination "package\INSTALL.txt"
-          Compress-Archive -Path "package\*" -DestinationPath "BrokenMachine-Windows-VST3.zip" -Force
+            New-Item -ItemType Directory -Force -Path package | Out-Null
+            Copy-Item -Path $vst3.FullName -Destination "package\Broken Machine.vst3" -Recurse
+            Copy-Item -Path "INSTALL.txt" -Destination "package\INSTALL.txt"
+            Compress-Archive -Path "package\*" -DestinationPath "BrokenMachine-Windows-VST3.zip" -Force
+          }
+          catch {
+            @(
+              "Stage: VST3 packaging"
+              "Message: $($_.Exception.Message)"
+              ""
+              ($_ | Out-String)
+            ) | Set-Content "..\..\build-error.txt"
+            throw
+          }
 
       - name: Upload downloadable plugin
         uses: actions/upload-artifact@v4
@@ -95,3 +159,26 @@ jobs:
           path: source/BrokenMachine/BrokenMachine-Windows-VST3.zip
           if-no-files-found: error
           retention-days: 30
+
+      - name: Report build failure for ChatGPT debugging
+        if: ${{ failure() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if (-not (Test-Path "build-error.txt")) {
+            "Build failed, but the failing action did not create a detailed build-error.txt file. Inspect run ${{ github.run_id }}." | Set-Content "build-error.txt"
+          }
+
+          $header = @"
+          Automated BrokenMachine Windows VST3 build failed.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Commit: ${{ github.sha }}
+          Attempt: ${{ github.run_attempt }}
+
+          "@
+
+          $body = $header + (Get-Content "build-error.txt" -Raw)
+          $body | Set-Content "failure-body.txt"
+          gh issue create --title "Windows VST3 build failure #${{ github.run_number }}" --body-file "failure-body.txt"
