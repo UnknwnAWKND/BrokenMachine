@@ -1,2 +1,0 @@
-Trigger verified Broken Machine v0.3 Windows build.
-Source SHA-256: 0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b
