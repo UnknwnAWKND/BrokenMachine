@@ -150,6 +150,23 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Report build success for ChatGPT retrieval
+        if: ${{ success() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $body = @"
+          BrokenMachine Windows VST3 build succeeded.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Commit: ${{ github.sha }}
+          Attempt: ${{ github.run_attempt }}
+          Artifact name: BrokenMachine-Windows-VST3
+          "@
+          $body | Set-Content "success-body.txt"
+          gh issue create --title "Windows VST3 build success #${{ github.run_number }}" --body-file "success-body.txt"
+
       - name: Report build failure for ChatGPT debugging
         if: ${{ failure() }}
         shell: pwsh
