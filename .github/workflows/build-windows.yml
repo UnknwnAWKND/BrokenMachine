@@ -1,5 +1,6 @@
 name: Build Windows VST3
 
+# BrokenMachine automated Windows compiler/build pipeline.
 on:
   workflow_dispatch:
   push:
