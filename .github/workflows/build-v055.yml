@@ -1,0 +1,276 @@
+name: Build Windows VST3 v0.5.5
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - v0.5.5
+    paths:
+      - "patches/v0.5.5-source-overlay.zip.b64"
+      - ".github/workflows/build-v055.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reconstruct verified v0.5.2 source base
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $yaml = Get-Content ".github/workflows/build-v05-hotfix.yml" -Raw
+          $m = [regex]::Match($yaml, '(?ms)^      - name: Reconstruct v0\.5\.1 and apply verified v0\.5\.2\r?\n.*?^        run: \|\r?\n(?<script>.*?)(?=^      - name: Static UI and compatibility audit)')
+          if (-not $m.Success) { throw "Could not extract verified v0.5.2 base reconstruction step" }
+          $lines = $m.Groups['script'].Value -split "`r?`n"
+          $script = ($lines | ForEach-Object { if ($_.StartsWith('          ')) { $_.Substring(10) } else { $_ } }) -join "`n"
+          Set-Content reconstruct-v052.ps1 $script
+          & ./reconstruct-v052.ps1
+          if ($LASTEXITCODE -ne 0) { throw "v0.5.2 base reconstruction failed: $LASTEXITCODE" }
+
+      - name: Install verified v0.5.5 source overlay
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = (Resolve-Path "source-root\BrokenMachine-v0.3").Path
+
+          function Get-DspManifestHash([string]$projectRoot) {
+            $files = @(Get-ChildItem (Join-Path $projectRoot "Source\DSP") -Recurse -File)
+            $rels = @($files | ForEach-Object { $_.FullName.Substring($projectRoot.Length + 1).Replace('\','/') })
+            [Array]::Sort($rels, [StringComparer]::Ordinal)
+            $manifest = ""
+            foreach ($rel in $rels) {
+              $h = (Get-FileHash (Join-Path $projectRoot $rel.Replace('/','\')) -Algorithm SHA256).Hash.ToLowerInvariant()
+              $manifest += "$h  $rel`n"
+            }
+            return ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($manifest)))).Replace('-','').ToLowerInvariant()
+          }
+
+          $dspBefore = Get-DspManifestHash $root
+          $transport = (Get-Content "patches\v0.5.5-source-overlay.zip.b64" -Raw).Trim()
+          if ($transport.Length -ne 40428) { throw "v0.5.5 payload length $($transport.Length), expected 40428" }
+          $transportHash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($transport)))).Replace('-','').ToLowerInvariant()
+          if ($transportHash -ne "08f9f3eac1aec4bc99d240886d6b0e34a17cb658694a800ebe729e2a451f654a") {
+            throw "v0.5.5 transport hash mismatch: $transportHash"
+          }
+
+          [IO.File]::WriteAllBytes("v0.5.5-source-overlay.zip", [Convert]::FromBase64String($transport))
+          $zipHash = (Get-FileHash "v0.5.5-source-overlay.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($zipHash -ne "31e3101ecda3e8edf8c1778afd232df48f7a6dac90709797bdb3461d10aeeb8f") {
+            throw "v0.5.5 source ZIP hash mismatch: $zipHash"
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "v0.5.5-source-overlay.zip").Path)
+          try {
+            $entries = @($zip.Entries | Where-Object { $_.Name } | ForEach-Object { $_.FullName.Replace('\','/') } | Sort-Object)
+          } finally {
+            $zip.Dispose()
+          }
+          $allowed = @(
+            "CMakeLists.txt",
+            "Source/Parameters/Parameters.cpp",
+            "Source/Parameters/Parameters.h",
+            "Source/PluginEditor.cpp",
+            "Source/PluginEditor.h",
+            "Source/PluginProcessor.cpp",
+            "Source/PluginProcessor.h",
+            "Source/UI/CustomLookAndFeel.cpp",
+            "Source/UI/CustomLookAndFeel.h"
+          ) | Sort-Object
+          if (($entries -join "`n") -ne ($allowed -join "`n")) {
+            throw "Unexpected v0.5.5 archive paths: $($entries -join ', ')"
+          }
+
+          Expand-Archive "v0.5.5-source-overlay.zip" -DestinationPath $root -Force
+          $dspAfter = Get-DspManifestHash $root
+          if ($dspAfter -ne $dspBefore) { throw "DSP implementation files changed: $dspBefore -> $dspAfter" }
+          @(
+            "v0.5.5 source overlay SHA-256: $zipHash",
+            "DSP directory manifest unchanged: $dspAfter"
+          ) | Set-Content source-validation.txt
+          Get-Content source-validation.txt
+
+      - name: Static layout state and compatibility audit
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cmake = Get-Content "CMakeLists.txt" -Raw
+          if (-not $cmake.Contains("VERSION 0.5.5")) { throw "CMake version is not 0.5.5" }
+          if (-not $cmake.Contains('COMPANY_NAME "UnknwnAWKND"')) { throw "Vendor metadata changed" }
+
+          $editor = Get-Content "Source\PluginEditor.cpp" -Raw
+          $header = Get-Content "Source\PluginEditor.h" -Raw
+          $laf = Get-Content "Source\UI\CustomLookAndFeel.cpp" -Raw
+          $allUi = $editor + "`n" + $header + "`n" + $laf
+          foreach ($marker in @(
+            "setResizeLimits (1208, 805, 1700, 1150)",
+            "setSize (1208, 805)",
+            'statusLabel.setText ("v0.5.5  /  USER PRESETS"',
+            "startupSizeTicks == 2",
+            "startupSizeTicks == 9",
+            "slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 88, 22)",
+            "Rectangle<int> (88, 78)",
+            "const std::array<int, 7> columns { 2, 3, 3, 4, 3, 3, 4 }",
+            "uiFont (16.5f, juce::Font::bold)",
+            "diameter / 68.0f",
+            'getProperties().set ("bmCardPower", true)',
+            "SUSTAIN + REVERB",
+            "OUTPUT + MODEL"
+          )) {
+            if (-not $allUi.Contains($marker)) { throw "Missing v0.5.5 UI marker '$marker'" }
+          }
+
+          foreach ($removed in @("MORE","detailKnobs","showingDetail","backButton","descriptorLabel","moreButton","showModuleDetail")) {
+            if ($allUi.Contains($removed)) { throw "Removed secondary-page/descriptor marker remains: $removed" }
+          }
+          if ([regex]::IsMatch($allUi, 'uiFont\s*\((?:[0-9]|1[01])(?:\.\d+)?f')) {
+            throw "Sub-12px control text remains"
+          }
+
+          $bindings = @([regex]::Matches($editor, 'addModuleKnob \([^\r\n]+Params::ID::(\w+)') | ForEach-Object { $_.Groups[1].Value })
+          if ($bindings.Count -ne 56) { throw "Expected 56 one-page knob bindings, found $($bindings.Count)" }
+          if (($bindings | Sort-Object -Unique).Count -ne 56) { throw "One-page knob bindings contain duplicates" }
+          $moduleCounts = @{
+            inputModule = 2; compressionModule = 7; driveModule = 8; reverbModule = 11;
+            pitchModule = 9; toneModule = 9; outputModule = 10
+          }
+          foreach ($name in $moduleCounts.Keys) {
+            $count = [regex]::Matches($editor, "addModuleKnob \($name,").Count
+            if ($count -ne $moduleCounts[$name]) { throw "$name has $count controls, expected $($moduleCounts[$name])" }
+          }
+
+          $paramsHeader = Get-Content "Source\Parameters\Parameters.h" -Raw
+          $params = Get-Content "Source\Parameters\Parameters.cpp" -Raw
+          $ids = @([regex]::Matches($paramsHeader, 'inline constexpr auto\s+(\w+)\s*=') | ForEach-Object { $_.Groups[1].Value })
+          if ($ids.Count -ne 79 -or ($ids | Sort-Object -Unique).Count -ne 79) { throw "Expected 79 unique parameter IDs" }
+          $safePosition = $params.IndexOf('ParameterID { ID::safe, 1 }')
+          foreach ($id in @("compressionEnabled","driveEnabled","reverbEnabled","pitchEnabled","toneEnabled")) {
+            if (-not $paramsHeader.Contains("auto $id")) { throw "Missing bypass ID $id" }
+            $position = $params.IndexOf("ParameterID { ID::$id, 1 }")
+            if ($position -le $safePosition) { throw "Bypass ID $id was not appended after all legacy parameters" }
+            if (-not $params.Substring($position, [Math]::Min(180, $params.Length - $position)).Contains("true")) { throw "$id does not default on" }
+          }
+
+          $processor = Get-Content "Source\PluginProcessor.cpp" -Raw
+          $processorHeader = Get-Content "Source\PluginProcessor.h" -Raw
+          foreach ($marker in @(
+            "stageDryBuffer","compressionMix","driveMix","reverbMix","pitchMix","toneMix",
+            "processBlended","stateContainsParameter","case 0:","case 1:","case 2:","case 3:",
+            "Hairline","Ghost Bloom","Unstable Clean","Machine Collapse","saveUserPreset","loadUserPreset"
+          )) {
+            if (-not (($processor + "`n" + $processorHeader).Contains($marker))) { throw "Missing processor marker '$marker'" }
+          }
+          if ([regex]::Matches($editor, 'Params::ID::(?:compression|drive|reverb|pitch|tone)Enabled').Count -ne 5) {
+            throw "Expected five card bypass attachments"
+          }
+
+      - name: Configure VS2022 x64
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build VST3 Release
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake --build build --config Release --target BrokenMachine_VST3 --parallel
+
+      - name: Validate and package v0.5.5 VST3
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vst3 = Get-ChildItem build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
+          if (-not $vst3) { throw "VST3 bundle not found" }
+          $binary = Get-ChildItem $vst3.FullName -Recurse -File | Where-Object { $_.Name -eq "Broken Machine.vst3" -or $_.Extension -eq ".dll" } | Select-Object -First 1
+          if (-not $binary) { throw "VST3 binary not found" }
+
+          $bytes = [IO.File]::ReadAllBytes($binary.FullName)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a -or [BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) {
+            throw "Binary is not PE32+ x86-64"
+          }
+          $vi = (Get-Item $binary.FullName).VersionInfo
+          $version = if ($vi.ProductVersion) { $vi.ProductVersion } else { $vi.FileVersion }
+          if (-not $version.StartsWith("0.5.5")) { throw "Unexpected binary version $version" }
+
+          $module = Get-ChildItem $vst3.FullName -Recurse -Filter moduleinfo.json | Select-Object -First 1
+          if (-not $module) { throw "moduleinfo.json not found" }
+          $moduleText = Get-Content $module.FullName -Raw
+          if (-not $moduleText.Contains('"Version": "0.5.5"') -or -not $moduleText.Contains("UnknwnAWKND")) {
+            throw "moduleinfo metadata mismatch"
+          }
+
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($marker in @(
+            "GetPluginFactory","InitDll","ExitDll","UnknwnAWKND","SUSTAIN + REVERB","OUTPUT + MODEL",
+            "compressionEnabled","driveEnabled","reverbEnabled","pitchEnabled","toneEnabled"
+          )) {
+            if (-not $ascii.Contains($marker)) { throw "Missing binary marker '$marker'" }
+          }
+          foreach ($removed in @("FRONT LEVEL","DYNAMIC CONTROL","MACHINE DRIVE","DECAY SHAPE","PITCH DAMAGE","DARK / BRIGHT","FINAL LEVEL")) {
+            if ($ascii.Contains($removed)) { throw "Removed descriptor survived compilation: $removed" }
+          }
+
+          $binaryHash = (Get-FileHash $binary.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "Broken Machine v0.5.5 validation",
+            "PE32+ x86-64",
+            "Version: $version",
+            "Vendor: UnknwnAWKND",
+            "Binary SHA-256: $binaryHash",
+            "Startup/editor size: 1208 x 805 with delayed FL Studio reassertion",
+            "All 56 UI knobs visible on one non-scrolling page",
+            "Uniform knob component bounds: 88 x 78; circular renderer scaled about 30 percent",
+            "Uniform knob/readout/top-control font: 12 px",
+            "Card heading font: 16.5 px",
+            "All descriptor labels and secondary pages removed",
+            "Five saved default-on card bypass parameters appended after 74 legacy IDs",
+            "Bypass transitions: 25 ms dry/processed crossfade",
+            "Legacy DSP files unchanged; enabled signal path preserves processing order"
+          ) | Set-Content BINARY_VALIDATION.txt
+
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item $vst3.FullName "package\Broken Machine.vst3" -Recurse
+          @(
+            "BROKEN MACHINE v0.5.5 — WINDOWS / FL STUDIO",
+            "",
+            "INSTALL",
+            "1. Close FL Studio before replacing an existing Broken Machine build.",
+            '2. Extract this ZIP and copy the entire "Broken Machine.vst3" folder to your VST3 location.',
+            '   The common system location is C:\Program Files\Common Files\VST3.',
+            "3. Re-open FL Studio and rescan plugins if needed.",
+            "",
+            "v0.5.5 INTERFACE",
+            "- Opens at 1208 x 805 and reasserts that size after FL Studio restores wrapper bounds.",
+            "- There is no scrolling and no MORE page: all 56 knobs are visible at once in two card bands.",
+            "- Knob labels sit directly above their controls; old descriptor text has been removed.",
+            "- Circular knob faces are about 30 percent smaller while 12 px labels/readouts and 88 x 22 value boxes remain uniform.",
+            "- Card headings remain 16.5 px.",
+            "",
+            "CARD BYPASS",
+            "- Compression, Drive, Sustain + Reverb, Pitch + Width and Tone each have a top-right checkbox.",
+            "- Checked means active; unchecked means bypassed. Input and Output + Model always remain active.",
+            "- Bypasses use a short click-free crossfade and are saved in FL Studio sessions and user presets.",
+            "- Factory presets and older sessions default every card on.",
+            "",
+            "COMPATIBILITY",
+            "The original 74 parameter IDs remain in their original order. Five bypass IDs were appended, for 79 total.",
+            "With every card enabled, v0.5.4 processing order, routing, controls and preset values are preserved."
+          ) | Set-Content package\INSTALL.txt
+          Copy-Item BINARY_VALIDATION.txt package\BINARY_VALIDATION.txt
+          Compress-Archive "package\*" "BrokenMachine-v0.5.5-Windows-VST3.zip" -Force
+          Write-Host "Binary SHA-256: $binaryHash"
+
+      - name: Upload v0.5.5 plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.5.5-Windows-VST3
+          path: source-root/BrokenMachine-v0.3/BrokenMachine-v0.5.5-Windows-VST3.zip
+          if-no-files-found: error
+          retention-days: 30
