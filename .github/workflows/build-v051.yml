@@ -1,0 +1,108 @@
+name: Build Windows VST3 v0.5.1 Refinement
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "v0.5.1-ui-refinement" ]
+    paths:
+      - "patches/v0.5.1-refinement-chunks/**"
+      - ".github/workflows/build-v051.yml"
+permissions:
+  contents: read
+  issues: write
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct v0.5.0 and apply verified v0.5.1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $yaml=Get-Content '.github/workflows/build-v05.yml' -Raw
+          $m=[regex]::Match($yaml,'(?ms)^      - name: Reconstruct verified v0\.5 source\r?\n.*?^        run: \|\r?\n(?<s>.*?)(?=^      - name: Configure VS2022 x64)')
+          if(!$m.Success){throw 'Cannot extract v0.5 reconstruction'}
+          $s=(($m.Groups['s'].Value -split "`r?`n")|%{if($_.StartsWith('          ')){$_.Substring(10)}else{$_}})-join"`n"
+          $s=$s.Replace('--exclude="BUILD_STATUS.md"','--exclude="*BUILD_STATUS.md"').Replace(',"MACHINE MONITOR"','').Replace(',"PREAMP > MODELER > REVERB"','')
+          Set-Content reconstruct-v05.ps1 $s
+          & ./reconstruct-v05.ps1
+          if($LASTEXITCODE-ne 0){exit $LASTEXITCODE}
+          $root=(Resolve-Path 'source-root/BrokenMachine-v0.3').Path
+          function CoreHash($r){
+            $fs=@(Get-ChildItem "$r/Source/DSP" -Recurse -File;Get-ChildItem "$r/Source/Parameters" -Recurse -File)
+            $rels=@($fs|%{$_.FullName.Substring($r.Length+1).Replace('\','/')});[Array]::Sort($rels,[StringComparer]::Ordinal)
+            $x='';foreach($rel in $rels){$h=(Get-FileHash (Join-Path $r $rel.Replace('/','\')) -Algorithm SHA256).Hash.ToLowerInvariant();$x+="$h  $rel`n"}
+            ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($x)))).Replace('-','').ToLowerInvariant()
+          }
+          $before=CoreHash $root
+          $b64='';foreach($n in @('part01.txt','part02.txt','part03.txt','part04.txt')){$b64+=(Get-Content "patches/v0.5.1-refinement-chunks/$n" -Raw).Trim()}
+          if($b64.Length-ne 27956){throw "v0.5.1 payload length $($b64.Length)"}
+          $th=([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($b64)))).Replace('-','').ToLowerInvariant()
+          if($th-ne 'e97575ad88b868558142eb73088c1404144fb0a8eaf75afe25e31ef33b7cb105'){throw "transport hash $th"}
+          [IO.File]::WriteAllBytes('v051.patch.gz',[Convert]::FromBase64String($b64))
+          if((Get-FileHash 'v051.patch.gz' -Algorithm SHA256).Hash.ToLowerInvariant()-ne'a077002a63c9fd23ffdebd2a0e83cce32dd3e6642830f7b1ce369d4a3f55f0ba'){throw 'gzip hash mismatch'}
+          $i=[IO.File]::OpenRead('v051.patch.gz');$g=[IO.Compression.GZipStream]::new($i,[IO.Compression.CompressionMode]::Decompress);$o=[IO.File]::Create('v051.patch');$g.CopyTo($o);$o.Dispose();$g.Dispose();$i.Dispose()
+          if((Get-FileHash 'v051.patch' -Algorithm SHA256).Hash.ToLowerInvariant()-ne'66f8cedb932e604edb22d6f7e0cf6b4ec7ec5cf72cacff5bd8c26f6dbed279cc'){throw 'patch hash mismatch'}
+          $changed=@(& git apply --numstat v051.patch|%{($_-split"`t")[-1].Replace('\','/')})
+          $bad=@($changed|?{$_ -like 'Source/DSP/*' -or $_ -like 'Source/Parameters/*'});if($bad){throw "DSP/parameter paths touched: $bad"}
+          & git apply --unsafe-paths --directory='source-root/BrokenMachine-v0.3' v051.patch
+          if($LASTEXITCODE-ne 0){throw 'v0.5.1 patch apply failed'}
+          $after=CoreHash $root;if($after-ne$before){throw "DSP/parameter manifest changed $before -> $after"}
+          "Core DSP/parameters unchanged: $before"|Set-Content source-validation.txt
+      - name: Static UX and compatibility audit
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference='Stop'
+          $cm=Get-Content CMakeLists.txt -Raw
+          if(!$cm.Contains('VERSION 0.5.1')-or!$cm.Contains('COMPANY_NAME "UnknwnAWKND"')){throw 'version/vendor metadata wrong'}
+          if(Test-Path 'Source/UI/MachineMonitor.cpp'){throw 'Machine Monitor still present'}
+          $ed=Get-Content Source/PluginEditor.cpp -Raw
+          foreach($x in @('factoryPresetBox','userPresetBox','savePresetButton','presetNameEditor','compressionModule','toneModule','SAVE PRESET','FACTORY','USER')){if(!$ed.Contains($x)){throw "missing UI marker $x"}}
+          if($ed.Contains('setTooltip')-or$ed.Contains('MachineMonitor')){throw 'visualizer/always-on tooltip remains'}
+          foreach($x in @('"TONE"','"LOW CUT"','"HIGH CUT"','"SPEAKER"','"LOW-MID BODY"','"BODY FREQ"','"UPPER-MID BITE"','"BITE FREQ"','"SPEAKER COLOR"','"SPEAKER SIZE"')){if(!$ed.Contains($x)){throw "Tone card marker missing $x"}}
+          $ph=Get-Content Source/Parameters/Parameters.h -Raw;$ids=[regex]::Matches($ph,'inline constexpr auto\s+(\w+)\s*=')|%{$_.Groups[1].Value}|sort -Unique;if($ids.Count-ne74){throw "parameter count $($ids.Count)"}
+          $refs=@();Get-ChildItem Source -Recurse -Include *.cpp,*.h|%{$t=Get-Content $_.FullName -Raw;[regex]::Matches($t,'Params::ID::(\w+)')|%{$refs+=$_.Groups[1].Value}}
+          $u=@($refs|sort -Unique|?{$_ -notin $ids});if($u){throw "undefined refs $u"}
+          $pp=Get-Content Source/PluginProcessor.cpp -Raw;foreach($x in @('case 0:','case 1:','case 2:','case 3:','Hairline','Ghost Bloom','Unstable Clean','Machine Collapse','saveUserPreset','loadUserPreset')){if(!$pp.Contains($x)){throw "missing processor marker $x"}}
+      - name: Configure VS2022 x64
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - name: Build VST3 Release
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake --build build --config Release --target BrokenMachine_VST3 --parallel
+      - name: Validate and package
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference='Stop'
+          $v=Get-ChildItem build -Recurse -Directory -Filter 'Broken Machine.vst3'|select -First 1;if(!$v){throw 'VST3 missing'}
+          $b=Get-ChildItem $v.FullName -Recurse -File|?{$_.Name-eq'Broken Machine.vst3'-or$_.Extension-eq'.dll'}|select -First 1;if(!$b){throw 'binary missing'}
+          $z=[IO.File]::ReadAllBytes($b.FullName);$pe=[BitConverter]::ToInt32($z,0x3c);if([BitConverter]::ToUInt16($z,$pe+4)-ne0x8664){throw 'not x86-64'}
+          $vi=(Get-Item $b.FullName).VersionInfo;$ver=if($vi.ProductVersion){$vi.ProductVersion}else{$vi.FileVersion};if(!$ver.StartsWith('0.5.1')){throw "version $ver"}
+          $mi=Get-ChildItem $v.FullName -Recurse -Filter moduleinfo.json|select -First 1;$mt=Get-Content $mi.FullName -Raw;if(!$mt.Contains('"Version": "0.5.1"')-or!$mt.Contains('UnknwnAWKND')){throw 'moduleinfo metadata wrong'}
+          $a=[Text.Encoding]::ASCII.GetString($z);foreach($x in @('GetPluginFactory','InitDll','ExitDll','UnknwnAWKND','SAVE PRESET')){if(!$a.Contains($x)){throw "binary marker $x missing"}}
+          $h=(Get-FileHash $b.FullName -Algorithm SHA256).Hash.ToLowerInvariant();@('Broken Machine v0.5.1 validation','PE32+ x86-64',"Version: $ver",'Vendor: UnknwnAWKND',"Binary SHA-256: $h",'74 parameters; DSP/parameter manifest preserved; user preset UI verified')|Set-Content BINARY_VALIDATION.txt
+          New-Item package -ItemType Directory -Force|Out-Null;Copy-Item $v.FullName 'package/Broken Machine.vst3' -Recurse;Copy-Item INSTALL.txt package/;Copy-Item BINARY_VALIDATION.txt package/;if(Test-Path RESEARCH.md){Copy-Item RESEARCH.md package/}
+          Compress-Archive 'package/*' BrokenMachine-v0.5.1-Windows-VST3.zip -Force;Write-Host "Binary SHA-256: $h"
+      - name: Package clean source
+        shell: pwsh
+        run: |
+          $s=(Resolve-Path 'source-root/BrokenMachine-v0.3').Path;$d=Join-Path (Get-Location) 'src/BrokenMachine-v0.5.1';New-Item $d -ItemType Directory -Force|Out-Null
+          Get-ChildItem $s -Recurse -File|?{$_.FullName-notmatch'\\build\\|\\package\\'-and$_.Extension-notin@('.log','.zip','.obj','.pdb','.dll','.exe')-and$_.Name-ne'BINARY_VALIDATION.txt'}|%{$r=$_.FullName.Substring($s.Length+1);$t=Join-Path $d $r;New-Item (Split-Path $t) -ItemType Directory -Force|Out-Null;Copy-Item $_.FullName $t}
+          Compress-Archive 'src/BrokenMachine-v0.5.1' BrokenMachine-v0.5.1-source.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.5.1-Windows-VST3
+          path: source-root/BrokenMachine-v0.3/BrokenMachine-v0.5.1-Windows-VST3.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.5.1-Source
+          path: BrokenMachine-v0.5.1-source.zip
+      - name: Report result
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue create --title "v0.5.1 build ${{ job.status }}" --body "Run ID: ${{ github.run_id }}`nCommit: ${{ github.sha }}"
