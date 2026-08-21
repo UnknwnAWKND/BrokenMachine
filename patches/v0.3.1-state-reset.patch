@@ -1,0 +1,269 @@
+--- a/BUILD_STATUS.md
++++ b/BUILD_STATUS.md
+@@ -1,32 +1,15 @@
+-# Broken Machine v0.3 Build Status
++# Broken Machine v0.3.1 Build Status
+ 
+-## Implemented
+-- Five input/source calibration profiles.
+-- Separate fast transient and slow sustain sensing.
+-- Four real signal-routing topologies.
+-- Recorder-style Trim -> EQ -> Channel -> Master nonlinear staging.
+-- Protected baritone/low-frequency drive path.
+-- Level-dependent upper-frequency breakup/fray.
+-- Independent wet-path filtering, compression, bias, distortion, ducking, gate, and bloom behavior.
+-- Multi-timescale correlated wow/flutter/drift transport instability.
+-- Original synthetic resonant/modeler layer.
+-- Controlled near-feedback resonator.
+-- Rebuilt factory presets using distinct source profiles and topologies.
+-- Updated GUI with SOURCE, RIG and paged DEEP EDIT controls.
+-- v0.3 Windows GitHub Actions workflow and failure reporting.
++## Patch scope
++- v0.3 architecture and tone design retained.
++- Fixes stale internal DSP state when wow/flutter, doubling, wet ambience, modeler, or near-feedback sections are reduced fully to zero and later re-enabled.
++- Safe Output now resets its gain state while disabled so re-enabling cannot inherit old attenuation.
++- No factory preset parameter values were changed by this patch.
+ 
+-## Validation completed locally
+-- 72 parameter IDs defined and all 72 referenced.
+-- No undefined or unused parameter IDs.
+-- Parameter layout contains exactly 72 parameters.
+-- All CMake source paths exist.
+-- Source delimiter/static structural audit passed.
+-- Workflow YAML parses successfully.
+-- Current JUCE documentation checked for AudioParameterChoice, APVTS ComboBoxAttachment, StringArray initializer-list use, and AudioBuffer::setSize semantics.
+-- One C++ duplicate-local declaration in Saturator.cpp was found and fixed during audit.
+-- Fixed factory-preset state consistency for Auto Level, Safe Output, and Drift Link.
+-- Fixed the preset browser so restored/custom states are not falsely labeled as Soft Focus.
+-- Fixed wet-path high-band decomposition after wet compression to avoid false crossover coloration.
++## Validation before this patch
++- v0.3.0 exact source SHA-256: `0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b`.
++- Two independent Windows-2022 builds succeeded (runs 32452311371 and 32452400530).
++- PE32+ x86-64, VST3 metadata 0.3.0, required VST3 exports present.
+ 
+-## Remaining validation
+-A real Windows x64 JUCE/VST3 compile is still required. The GitHub integration used for previous builds became unavailable for repository writes during this session, so the v0.3 branch has not yet been pushed/built by GitHub Actions. Do not call v0.3 release-ready until that Windows build passes and the resulting VST3 is tested in FL Studio.
++## Required validation for v0.3.1
++A fresh Windows-2022 x64 build, binary validation, packaging validation, and then FL Studio / real-guitar listening test.
+--- a/BUILD_WINDOWS.bat
++++ b/BUILD_WINDOWS.bat
+@@ -3,7 +3,7 @@
+ cd /d "%~dp0"
+ 
+ echo ==================================================
+-echo   BROKEN MACHINE v0.3 - WINDOWS VST3 BUILD
++echo   BROKEN MACHINE v0.3.1 - WINDOWS VST3 BUILD
+ echo ==================================================
+ echo.
+ 
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,6 +1,6 @@
+ cmake_minimum_required(VERSION 3.22)
+ 
+-project(BrokenMachine VERSION 0.3.0 LANGUAGES C CXX)
++project(BrokenMachine VERSION 0.3.1 LANGUAGES C CXX)
+ 
+ set(CMAKE_CXX_STANDARD 20)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+--- a/INSTALL.txt
++++ b/INSTALL.txt
+@@ -1,4 +1,4 @@
+-BROKEN MACHINE v0.3 — WINDOWS / FL STUDIO
++BROKEN MACHINE v0.3.1 — WINDOWS / FL STUDIO
+ 
+ 1. Extract the downloaded ZIP.
+ 2. Copy the entire "Broken Machine.vst3" folder to:
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+-# Broken Machine v0.3
++# Broken Machine v0.3.1
+ 
+-Broken Machine is an original reactive guitar-processing VST3 for Windows/FL Studio. v0.3 expands the v0.2 research-driven architecture with input calibration, true multi-topology routing, a more structured recorder-style preamp, a more independent distorted ambience path, transient/sustain-aware modulation, original synthetic-resonance processing, and controlled near-feedback behavior.
++Broken Machine is an original reactive guitar-processing VST3 for Windows/FL Studio. v0.3.1 is the post-build stability patch for the v0.3 architecture. v0.3 expands the v0.2 research-driven architecture with input calibration, true multi-topology routing, a more structured recorder-style preamp, a more independent distorted ambience path, transient/sustain-aware modulation, original synthetic-resonance processing, and controlled near-feedback behavior.
+ 
+ It is inspired by the *behaviors* found in unstable direct-recorded guitar rigs. It is not an official Mk.gee product and does not copy proprietary algorithms, presets, branding, artwork, or circuit schematics.
+ 
+--- a/Source/DSP/FeedbackResonator.cpp
++++ b/Source/DSP/FeedbackResonator.cpp
+@@ -11,14 +11,22 @@
+ {
+     for (auto& s : states)
+         s = {};
++    wasActive = false;
+ }
+ 
+ void FeedbackResonator::process (juce::AudioBuffer<float>& buffer, const Settings& s, float envelope, float transient)
+ {
+     const int channels = juce::jmin (buffer.getNumChannels(), static_cast<int> (states.size()));
+     const float amount = juce::jlimit (0.0f, 1.0f, s.amount);
+-    if (channels <= 0 || amount <= 0.00001f)
++    if (channels <= 0)
+         return;
++    if (amount <= 0.00001f)
++    {
++        if (wasActive)
++            reset();
++        return;
++    }
++    wasActive = true;
+ 
+     const float freq = juce::jlimit (300.0f, 4500.0f, s.frequencyHz);
+     const float hold = juce::jlimit (0.0f, 1.0f, s.hold);
+--- a/Source/DSP/FeedbackResonator.h
++++ b/Source/DSP/FeedbackResonator.h
+@@ -27,4 +27,5 @@
+ 
+     double sr = 44100.0;
+     std::vector<State> states;
++    bool wasActive = false;
+ };
+--- a/Source/DSP/MicroDouble.cpp
++++ b/Source/DSP/MicroDouble.cpp
+@@ -16,6 +16,7 @@
+         std::fill (line.begin(), line.end(), 0.0f);
+     std::fill (writePositions.begin(), writePositions.end(), 0);
+     phase = 0.0f;
++    wasActive = false;
+ }
+ 
+ float MicroDouble::readDelay (const std::vector<float>& line, int writeIndex, float delaySamples) const noexcept
+@@ -34,7 +35,12 @@
+     const int channels = juce::jmin (buffer.getNumChannels(), static_cast<int> (delayLines.size()));
+     const float mix = juce::jlimit (0.0f, 1.0f, s.mix);
+     if (mix <= 0.00001f)
++    {
++        if (wasActive)
++            reset();
+         return;
++    }
++    wasActive = true;
+ 
+     const float cents = juce::jlimit (-20.0f, 20.0f, s.detuneCents);
+     const float depthMs = std::abs (cents) / 20.0f * (1.2f + 1.2f * s.weird);
+--- a/Source/DSP/MicroDouble.h
++++ b/Source/DSP/MicroDouble.h
+@@ -26,4 +26,5 @@
+     std::vector<std::vector<float>> delayLines;
+     std::vector<int> writePositions;
+     float phase = 0.0f;
++    bool wasActive = false;
+ };
+--- a/Source/DSP/ModelerProcessor.cpp
++++ b/Source/DSP/ModelerProcessor.cpp
+@@ -15,6 +15,7 @@
+ {
+     for (auto& s : states)
+         s = {};
++    wasActive = false;
+ }
+ 
+ float ModelerProcessor::randomBipolar (int channel) noexcept
+@@ -45,7 +46,12 @@
+ 
+     const float mix = juce::jlimit (0.0f, 1.0f, s.mix);
+     if (mix <= 0.00001f)
++    {
++        if (wasActive)
++            reset();
+         return;
++    }
++    wasActive = true;
+ 
+     const float color = juce::jlimit (0.0f, 1.0f, s.color);
+     const float motion = juce::jlimit (0.0f, 1.0f, s.motion);
+--- a/Source/DSP/ModelerProcessor.h
++++ b/Source/DSP/ModelerProcessor.h
+@@ -37,4 +37,5 @@
+     double sr = 44100.0;
+     std::vector<State> states;
+     std::vector<uint32_t> rng;
++    bool wasActive = false;
+ };
+--- a/Source/DSP/SafetyLimiter.cpp
++++ b/Source/DSP/SafetyLimiter.cpp
+@@ -3,7 +3,10 @@
+ void SafetyLimiter::process (juce::AudioBuffer<float>& buffer, bool enabled) noexcept
+ {
+     if (! enabled)
++    {
++        gain = 1.0f;
+         return;
++    }
+ 
+     const float ceiling = juce::Decibels::decibelsToGain (-0.8f);
+     const float release = std::exp (-1.0f / (0.060f * static_cast<float> (juce::jmax (1.0, sr))));
+--- a/Source/DSP/SpatialProcessor.cpp
++++ b/Source/DSP/SpatialProcessor.cpp
+@@ -31,6 +31,7 @@
+     gateGain = 1.0f;
+     wetCompEnv = 0.0f;
+     reverb.reset();
++    wasActive = false;
+ }
+ 
+ float SpatialProcessor::readDelay (const std::vector<float>& line, int writeIndex, float delaySamples) const noexcept
+@@ -63,7 +64,12 @@
+     const float sustain = juce::jlimit (0.0f, 1.0f, s.sustain);
+     const float send = juce::jlimit (0.0f, 1.0f, s.space + positiveBloom * 0.12f);
+     if (send <= 0.00001f)
++    {
++        if (wasActive)
++            reset();
+         return;
++    }
++    wasActive = true;
+ 
+     const float predelayMs = juce::jlimit (0.0f, 150.0f, s.predelayMs);
+     const float predelaySamples = predelayMs * 0.001f * static_cast<float> (sr);
+--- a/Source/DSP/SpatialProcessor.h
++++ b/Source/DSP/SpatialProcessor.h
+@@ -46,4 +46,5 @@
+     float gateDetector = 0.0f;
+     float gateGain = 1.0f;
+     float wetCompEnv = 0.0f;
++    bool wasActive = false;
+ };
+--- a/Source/DSP/WowFlutter.cpp
++++ b/Source/DSP/WowFlutter.cpp
+@@ -30,6 +30,7 @@
+     sharedSlowNoise = sharedFastNoise = sharedDriftNoise = 0.0f;
+     mechanicalPhase = 0.0f;
+     displayedDrift.store (0.0f);
++    wasActive = false;
+ }
+ 
+ float WowFlutter::randomBipolar (int channel) noexcept
+@@ -71,7 +72,12 @@
+                                         + weird * 0.10f);
+ 
+     if (effectMix <= 0.00001f)
++    {
++        if (wasActive)
++            reset();
+         return;
++    }
++    wasActive = true;
+ 
+     const float wowInc = juce::MathConstants<float>::twoPi * (0.14f + 0.10f * weird) / static_cast<float> (sr);
+     const float flutterInc = juce::MathConstants<float>::twoPi * (4.4f + 3.1f * weird) / static_cast<float> (sr);
+--- a/Source/DSP/WowFlutter.h
++++ b/Source/DSP/WowFlutter.h
+@@ -39,4 +39,5 @@
+     float sharedDriftNoise = 0.0f;
+     float mechanicalPhase = 0.0f;
+     std::atomic<float> displayedDrift { 0.0f };
++    bool wasActive = false;
+ };
+--- a/Source/PluginEditor.cpp
++++ b/Source/PluginEditor.cpp
+@@ -56,7 +56,7 @@
+     subtitleLabel.setColour (juce::Label::textColourId, muted);
+     addAndMakeVisible (subtitleLabel);
+ 
+-    statusLabel.setText ("v0.3  /  2x PREAMP OS  /  MULTI-RIG", juce::dontSendNotification);
++    statusLabel.setText ("v0.3.1  /  2x PREAMP OS  /  MULTI-RIG", juce::dontSendNotification);
+     statusLabel.setFont (juce::Font (juce::FontOptions (9.0f, juce::Font::bold)));
+     statusLabel.setColour (juce::Label::textColourId, muted);
+     addAndMakeVisible (statusLabel);
