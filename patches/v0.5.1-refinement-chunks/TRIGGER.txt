@@ -1,1 +1,1 @@
-Trigger v0.5.1 Windows validation. No plugin source content.
+Trigger v0.5.1 Windows validation after workflow syntax fix. No plugin source content.
