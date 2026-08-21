@@ -1,0 +1,129 @@
+name: Build Windows VST3 v0.5.2 Uniform UI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - v0.5.2-ui-uniformity
+    paths:
+      - "patches/v0.5.2-ui-uniformity.patch"
+      - ".github/workflows/build-v052-ui.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct verified v0.5.2 source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $yaml = Get-Content ".github/workflows/build-v05-hotfix.yml" -Raw
+          $m = [regex]::Match($yaml, '(?ms)^      - name: Reconstruct v0\.5\.1 and apply verified v0\.5\.2\r?\n.*?^        run: \|\r?\n(?<script>.*?)(?=^      - name: Static UI and compatibility audit)')
+          if (-not $m.Success) { throw "Could not extract verified v0.5.2 reconstruction" }
+          $lines = $m.Groups['script'].Value -split "`r?`n"
+          $script = ($lines | ForEach-Object { if ($_.StartsWith('          ')) { $_.Substring(10) } else { $_ } }) -join "`n"
+          Set-Content reconstruct-v052.ps1 $script
+          & ./reconstruct-v052.ps1
+          if ($LASTEXITCODE -ne 0) { throw "v0.5.2 reconstruction failed: $LASTEXITCODE" }
+
+      - name: Apply UI uniformity patch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = "source-root/BrokenMachine-v0.3"
+          $patch = "patches/v0.5.2-ui-uniformity.patch"
+          $changed = @(& git apply --numstat $patch | ForEach-Object { ($_ -split "`t")[-1].Replace('\','/') })
+          $allowed = @("Source/PluginEditor.cpp", "Source/PluginEditor.h", "Source/UI/CustomLookAndFeel.cpp")
+          $forbidden = @($changed | Where-Object { $_ -notin $allowed })
+          if ($forbidden.Count) { throw "UI patch touches forbidden paths: $($forbidden -join ', ')" }
+          & git apply --ignore-space-change --ignore-whitespace --unsafe-paths --directory=$root $patch
+          if ($LASTEXITCODE -ne 0) { throw "UI patch apply failed: $LASTEXITCODE" }
+
+      - name: Static visual-only audit
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $editor = Get-Content "Source/PluginEditor.cpp" -Raw
+          $look = Get-Content "Source/UI/CustomLookAndFeel.cpp" -Raw
+          foreach ($marker in @(
+            "setSize (1240, 840)",
+            "setResizeLimits (1180, 800, 1680, 1120)",
+            'slider.getProperties().set ("bmMacro", true)',
+            'slider.getProperties().set ("bmWarm", false)',
+            "const int uniformKnobW",
+            "const int uniformKnobH",
+            "uiFont (19.5f",
+            "uiFont (12.1f"
+          )) {
+            if (-not $editor.Contains($marker) -and -not $look.Contains($marker)) { throw "Missing UI marker: $marker" }
+          }
+          foreach ($removed in @(
+            "LEVEL / REACTIVE RESPONSE",
+            "DYNAMICS / PICK SHAPE / DENSITY",
+            "PREAMP / DISTORTION / TEXTURE",
+            "NOTE DECAY / AMBIENCE / GHOST",
+            "MICRO-PITCH / WOW / FLUTTER / DRIFT",
+            "FILTERS / BODY / BITE / SPEAKER",
+            "SYNTHETIC LAYER / FEEDBACK / FINAL MIX"
+          )) {
+            if ($editor.Contains($removed)) { throw "Card subtitle remains: $removed" }
+          }
+          $cmake = Get-Content "CMakeLists.txt" -Raw
+          if (-not $cmake.Contains("VERSION 0.5.2")) { throw "Version changed unexpectedly" }
+          $visible = [regex]::Matches($editor, 'addKnob \(Params::ID::(\w+)') | ForEach-Object { $_.Groups[1].Value }
+          if ($visible.Count -ne 56 -or ($visible | Sort-Object -Unique).Count -ne 56) { throw "Visible parameter bindings changed" }
+
+      - name: Configure VS2022 x64
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build VST3 Release
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake --build build --config Release --target BrokenMachine_VST3 --parallel
+
+      - name: Validate and package
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vst3 = Get-ChildItem build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
+          if (-not $vst3) { throw "VST3 bundle missing" }
+          $binary = Get-ChildItem $vst3.FullName -Recurse -File | Where-Object { $_.Name -eq "Broken Machine.vst3" -or $_.Extension -eq ".dll" } | Select-Object -First 1
+          if (-not $binary) { throw "VST3 binary missing" }
+          $bytes = [IO.File]::ReadAllBytes($binary.FullName)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { throw "Binary is not x86-64" }
+          $hash = (Get-FileHash $binary.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "Broken Machine v0.5.2 uniform UI validation",
+            "PE32+ x86-64",
+            "Visual-only patch; DSP, parameters, presets and routing unchanged",
+            "Binary SHA-256: $hash"
+          ) | Set-Content BINARY_VALIDATION.txt
+          New-Item package -ItemType Directory -Force | Out-Null
+          Copy-Item $vst3.FullName "package/Broken Machine.vst3" -Recurse
+          Copy-Item INSTALL.txt package/
+          Copy-Item BINARY_VALIDATION.txt package/
+          Compress-Archive "package/*" "BrokenMachine-v0.5.2-Uniform-UI-Windows-VST3.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.5.2-Uniform-UI-Windows-VST3
+          path: source-root/BrokenMachine-v0.3/BrokenMachine-v0.5.2-Uniform-UI-Windows-VST3.zip
+
+      - name: Report result
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "v0.5.2 uniform UI build ${{ job.status }}" --body "Run ID: ${{ github.run_id }}`nCommit: ${{ github.sha }}"
