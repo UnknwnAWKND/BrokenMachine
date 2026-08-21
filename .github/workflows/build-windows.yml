@@ -20,6 +20,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Report build start for ChatGPT tracking
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $body = @"
+          BrokenMachine Windows VST3 build started.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Commit: ${{ github.sha }}
+          Attempt: ${{ github.run_attempt }}
+          "@
+          $body | Set-Content "start-body.txt"
+          gh issue create --title "Windows VST3 build started #${{ github.run_number }}" --body-file "start-body.txt"
+
       - name: Reconstruct and extract verified source archive
         shell: pwsh
         run: |
