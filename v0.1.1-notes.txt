@@ -1,0 +1,1 @@
+v0.1.1 source audit: corrected parameter reserve count and changed wow/flutter to preserve a true dry path when instability is zero, avoiding an unintended always-on short delay.
