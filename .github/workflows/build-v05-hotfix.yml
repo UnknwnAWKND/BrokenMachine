@@ -81,7 +81,7 @@ jobs:
           foreach($x in @('moreButton','backButton','showingDetail','detailKnobs','detailSections','showModuleDetail','MachineMonitor','setTooltip')){if($ed.Contains($x) -or $eh.Contains($x)){throw "legacy UI marker remains $x"}}
           $calls=[regex]::Matches($ed,'addModuleKnob \(').Count - 1; if($calls -ne 56){throw "Expected 56 visible knob calls, got $calls"}
           $tone=[regex]::Matches($ed,'addModuleKnob \(toneModule').Count; if($tone -ne 9){throw "Tone control count $tone"}
-          foreach($id in @('brightness','lowCutHz','highCutHz','speaker','body','bodyFreqHz','bite','biteFreqHz','size')){if(([regex]::Matches($ed,"addModuleKnob \(toneModule, Params::ID::$id")).Count -ne 1){throw "Tone mapping $id"}}
+          foreach($id in @('brightness','lowCutHz','highCutHz','speaker','body','bodyFreqHz','bite','biteFreqHz','size')){if(([regex]::Matches($ed,"addModuleKnob \(toneModule, Params::ID::$id,")).Count -ne 1){throw "Tone mapping $id"}}
           $ph=Get-Content Source/Parameters/Parameters.h -Raw; $ids=[regex]::Matches($ph,'inline constexpr auto\s+(\w+)\s*=')|%{$_.Groups[1].Value}|Sort-Object -Unique; if($ids.Count-ne74){throw "parameter count $($ids.Count)"}
           $refs=@(); Get-ChildItem Source -Recurse -Include *.cpp,*.h|%{$t=Get-Content $_.FullName -Raw;[regex]::Matches($t,'Params::ID::(\w+)')|%{$refs+=$_.Groups[1].Value}}
           $u=@($refs|Sort-Object -Unique|?{$_ -notin $ids}); if($u){throw "undefined refs $u"}
