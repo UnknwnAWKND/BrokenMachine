@@ -4,13 +4,15 @@ on:
     branches: [ "v0.3-tone-overhaul" ]
     paths: [ ".github/workflows/diagnose-v03-tree.yml" ]
   workflow_dispatch:
-
+permissions:
+  contents: read
+  issues: write
 jobs:
   diagnose:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - name: Extract and print file hashes
+      - name: Extract and collect file hashes
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -28,8 +30,15 @@ jobs:
           $files = @(Get-ChildItem $root -Recurse -File)
           $rels = @($files | ForEach-Object { $_.FullName.Substring($root.Length + 1).Replace('\','/') })
           [Array]::Sort($rels, [StringComparer]::Ordinal)
-          Write-Host "FILE_COUNT=$($rels.Count)"
+          "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" | Set-Content hashes.txt
+          "FILE_COUNT=$($rels.Count)" | Add-Content hashes.txt
           foreach ($rel in $rels) {
             $hash = (Get-FileHash (Join-Path $root $rel.Replace('/','\')) -Algorithm SHA256).Hash.ToLowerInvariant()
-            Write-Host "$hash  $rel"
+            "$hash  $rel" | Add-Content hashes.txt
           }
+          Get-Content hashes.txt
+      - name: Report hashes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue create --title "v0.3 transferred source hash diagnosis #${{ github.run_number }}" --body-file hashes.txt
