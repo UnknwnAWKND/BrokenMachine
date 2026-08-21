@@ -30,7 +30,7 @@ jobs:
           Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           Commit: ${{ github.sha }}
           Base source SHA-256: 0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b
-          Patched tree SHA-256: 1ba6abd4cbe06bc752d9094bea058c6e51800e772e3dd838caf8de384b2f7988
+          Windows patched tree SHA-256: b59cf5677cef7e8b20398aa81d0aa482bd9bdf74225ecb32ce98ee4d95207bdf
           "@ | Set-Content start.txt
           gh issue create --title "v0.3.1 Windows build started #${{ github.run_number }}" --body-file start.txt
 
@@ -54,7 +54,6 @@ jobs:
             Expand-Archive "BrokenMachine-v0.3-source.zip" "source-root" -Force
             if (-not (Test-Path "source-root\BrokenMachine-v0.3\CMakeLists.txt")) { throw "CMakeLists missing after extraction" }
             if (-not (Test-Path "patches\v0.3.1-state-reset.patch")) { throw "v0.3.1 patch missing" }
-
             & git apply --unsafe-paths --directory="source-root/BrokenMachine-v0.3" "patches/v0.3.1-state-reset.patch"
             if ($LASTEXITCODE -ne 0) { throw "git apply failed with exit code $LASTEXITCODE" }
 
@@ -72,9 +71,21 @@ jobs:
             try { $treeHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($manifest)))).Replace('-','').ToLowerInvariant() }
             finally { $sha.Dispose() }
             Write-Host "Base source SHA-256: $baseHash"
-            Write-Host "Patched tree SHA-256: $treeHash"
-            if ($treeHash -ne "1ba6abd4cbe06bc752d9094bea058c6e51800e772e3dd838caf8de384b2f7988") { throw "Patched source tree mismatch: $treeHash" }
+            Write-Host "Windows patched tree SHA-256: $treeHash"
+            if ($treeHash -ne "b59cf5677cef7e8b20398aa81d0aa482bd9bdf74225ecb32ce98ee4d95207bdf") { throw "Patched source tree mismatch: $treeHash" }
             if (-not ((Get-Content "source-root\BrokenMachine-v0.3\CMakeLists.txt" -Raw).Contains("VERSION 0.3.1"))) { throw "Patched CMake version is not 0.3.1" }
+            $mustContain = @(
+              @("Source\DSP\WowFlutter.cpp","if (wasActive)"),
+              @("Source\DSP\MicroDouble.cpp","if (wasActive)"),
+              @("Source\DSP\SpatialProcessor.cpp","if (wasActive)"),
+              @("Source\DSP\ModelerProcessor.cpp","if (wasActive)"),
+              @("Source\DSP\FeedbackResonator.cpp","if (wasActive)"),
+              @("Source\DSP\SafetyLimiter.cpp","gain = 1.0f")
+            )
+            foreach ($check in $mustContain) {
+              $text = Get-Content (Join-Path $root $check[0]) -Raw
+              if (-not $text.Contains($check[1])) { throw "Patch marker '$($check[1])' missing from $($check[0])" }
+            }
           }
           catch {
             @("Stage: source verification / v0.3.1 patch","Message: $($_.Exception.Message)","",($_ | Out-String)) | Set-Content build-error.txt
@@ -122,7 +133,7 @@ jobs:
             $checks = @("Soft Focus","Distorted Halo","Bowed Static","Baritone Wire","Preamp First","Halo First","Parallel Rig","Modeler First")
             $missing = @($checks | Where-Object { -not $ascii.Contains($_) })
             if ($missing.Count) { throw "Missing expected strings: $($missing -join ', ')" }
-            @("Broken Machine v0.3.1 validation","PE machine: 0x8664 x86-64","Version: $version","Patched tree SHA-256: 1ba6abd4cbe06bc752d9094bea058c6e51800e772e3dd838caf8de384b2f7988","Verified strings: $($checks -join ', ')") | Set-Content BINARY_VALIDATION.txt
+            @("Broken Machine v0.3.1 validation","PE machine: 0x8664 x86-64","Version: $version","Windows patched tree SHA-256: b59cf5677cef7e8b20398aa81d0aa482bd9bdf74225ecb32ce98ee4d95207bdf","Verified strings: $($checks -join ', ')") | Set-Content BINARY_VALIDATION.txt
             New-Item -ItemType Directory -Force package | Out-Null
             Copy-Item $vst3.FullName "package\Broken Machine.vst3" -Recurse
             Copy-Item INSTALL.txt package\INSTALL.txt
@@ -163,7 +174,7 @@ jobs:
           Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           Commit: ${{ github.sha }}
           Base source SHA-256: 0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b
-          Patched tree SHA-256: 1ba6abd4cbe06bc752d9094bea058c6e51800e772e3dd838caf8de384b2f7988
+          Windows patched tree SHA-256: b59cf5677cef7e8b20398aa81d0aa482bd9bdf74225ecb32ce98ee4d95207bdf
           "@ | Set-Content success.txt
           gh issue create --title "v0.3.1 Windows build success #${{ github.run_number }}" --body-file success.txt
 
