@@ -1,0 +1,221 @@
+name: Build Windows VST3 v0.3 Verified Source
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "v0.3-tone-overhaul" ]
+    paths:
+      - "v0.3-source-correct/**"
+      - ".github/workflows/build-v03-correct.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Report build start
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $body = @"
+          BrokenMachine v0.3 verified-source Windows VST3 build started.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Commit: ${{ github.sha }}
+          Attempt: ${{ github.run_attempt }}
+          Required source SHA-256: 0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b
+          "@
+          $body | Set-Content start-body.txt
+          gh issue create --title "v0.3 verified Windows build started #${{ github.run_number }}" --body-file start-body.txt
+
+      - name: Reconstruct and verify exact Library source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          try {
+            Remove-Item build-error.txt -ErrorAction SilentlyContinue
+            $names = @(
+              "part01.txt",
+              "part02.txt",
+              "part03.txt",
+              "part04.txt",
+              "part05a.txt",
+              "part05b1.txt",
+              "part05b2.txt",
+              "part05b3.txt",
+              "part06.txt"
+            )
+            $encoded = ""
+            foreach ($name in $names) {
+              $path = Join-Path "v0.3-source-correct" $name
+              if (-not (Test-Path $path)) { throw "Missing verified source piece: $path" }
+              $encoded += (Get-Content $path -Raw).Trim()
+            }
+            if ($encoded.Length -ne 69504) { throw "Encoded source length mismatch: expected 69504, got $($encoded.Length)" }
+            $archiveBytes = [Convert]::FromBase64String($encoded)
+            [IO.File]::WriteAllBytes("BrokenMachine-v0.3-source.zip", $archiveBytes)
+            $expected = "0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b"
+            $actual = (Get-FileHash "BrokenMachine-v0.3-source.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host "Reconstructed source SHA-256: $actual"
+            if ($actual -ne $expected) { throw "Source SHA-256 mismatch. Expected $expected, got $actual" }
+            Expand-Archive "BrokenMachine-v0.3-source.zip" "source-root" -Force
+            if (-not (Test-Path "source-root\BrokenMachine-v0.3\CMakeLists.txt")) { throw "CMakeLists.txt missing after extraction" }
+            Write-Host "Exact Library v0.3 source verified and extracted."
+          }
+          catch {
+            @(
+              "Stage: exact source reconstruction / SHA verification"
+              "Message: $($_.Exception.Message)"
+              ""
+              ($_ | Out-String)
+            ) | Set-Content build-error.txt
+            throw
+          }
+
+      - name: Configure Visual Studio 2022 x64
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Continue"
+          & cmake -S . -B build -G "Visual Studio 17 2022" -A x64 *> configure.log
+          $code = $LASTEXITCODE
+          Get-Content configure.log
+          if ($code -ne 0) {
+            @(
+              "Stage: CMake configure"
+              "Exit code: $code"
+              ""
+              "Last configure log lines:"
+              (Get-Content configure.log -Tail 300)
+            ) | Set-Content "..\..\build-error.txt"
+            exit $code
+          }
+
+      - name: Build VST3
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Continue"
+          & cmake --build build --config Release --target BrokenMachine_VST3 --parallel *> build.log
+          $code = $LASTEXITCODE
+          Get-Content build.log
+          if ($code -ne 0) {
+            @(
+              "Stage: C++ / VST3 compilation"
+              "Exit code: $code"
+              ""
+              "Last compiler log lines:"
+              (Get-Content build.log -Tail 500)
+            ) | Set-Content "..\..\build-error.txt"
+            exit $code
+          }
+
+      - name: Validate Windows binary and package
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          try {
+            $vst3 = Get-ChildItem -Path build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
+            if (-not $vst3) { throw "Built Broken Machine.vst3 bundle was not found" }
+            $binary = Get-ChildItem -Path $vst3.FullName -Recurse -File | Where-Object { $_.Name -eq "Broken Machine.vst3" -or $_.Extension -eq ".dll" } | Select-Object -First 1
+            if (-not $binary) { throw "VST3 processor binary was not found in bundle" }
+            $bytes = [IO.File]::ReadAllBytes($binary.FullName)
+            if ($bytes.Length -lt 512 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw "Processor binary is not a Windows PE/MZ file" }
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            if ($machine -ne 0x8664) { throw ("Processor machine type is 0x{0:x4}, expected x86-64 0x8664" -f $machine) }
+            $vi = (Get-Item $binary.FullName).VersionInfo
+            $version = $vi.ProductVersion
+            if ([string]::IsNullOrWhiteSpace($version)) { $version = $vi.FileVersion }
+            if ([string]::IsNullOrWhiteSpace($version) -or -not $version.StartsWith("0.3")) { throw "Unexpected binary version metadata: '$version'" }
+            $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+            $presetNames = @("Soft Focus", "Distorted Halo", "Bowed Static", "Baritone Wire")
+            $found = @($presetNames | Where-Object { $ascii.Contains($_) })
+            @(
+              "Broken Machine v0.3 binary validation"
+              "PE machine: 0x8664 (Windows x86-64)"
+              "Version metadata: $version"
+              "Source SHA-256: 0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b"
+              "Preset strings found in binary: $($found -join ', ')"
+              "Binary path: $($binary.FullName)"
+            ) | Set-Content BINARY_VALIDATION.txt
+            New-Item -ItemType Directory -Force -Path package | Out-Null
+            Copy-Item -Path $vst3.FullName -Destination "package\Broken Machine.vst3" -Recurse
+            Copy-Item -Path INSTALL.txt -Destination "package\INSTALL.txt"
+            if (Test-Path RESEARCH.md) { Copy-Item -Path RESEARCH.md -Destination "package\RESEARCH.md" }
+            Copy-Item -Path BINARY_VALIDATION.txt -Destination "package\BINARY_VALIDATION.txt"
+            Compress-Archive -Path "package\*" -DestinationPath "BrokenMachine-v0.3-Windows-VST3.zip" -Force
+          }
+          catch {
+            @(
+              "Stage: binary validation / packaging"
+              "Message: $($_.Exception.Message)"
+              ""
+              ($_ | Out-String)
+            ) | Set-Content "..\..\build-error.txt"
+            throw
+          }
+
+      - name: Upload compiled plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.3-Windows-VST3
+          path: source-root/BrokenMachine-v0.3/BrokenMachine-v0.3-Windows-VST3.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload exact source
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.3-Source
+          path: BrokenMachine-v0.3-source.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Report build success
+        if: ${{ success() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $body = @"
+          BrokenMachine v0.3 verified-source Windows VST3 build succeeded.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Commit: ${{ github.sha }}
+          Attempt: ${{ github.run_attempt }}
+          Source SHA-256: 0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b
+          Artifacts: BrokenMachine-v0.3-Windows-VST3, BrokenMachine-v0.3-Source
+          "@
+          $body | Set-Content success-body.txt
+          gh issue create --title "v0.3 verified Windows build success #${{ github.run_number }}" --body-file success-body.txt
+
+      - name: Report build failure
+        if: ${{ failure() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if (-not (Test-Path build-error.txt)) {
+            "Build failed without a captured stage log. Inspect workflow run ${{ github.run_id }}." | Set-Content build-error.txt
+          }
+          $header = @"
+          BrokenMachine v0.3 verified-source Windows VST3 build failed.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Commit: ${{ github.sha }}
+          Attempt: ${{ github.run_attempt }}
+
+          "@
+          $body = $header + (Get-Content build-error.txt -Raw)
+          $body | Set-Content failure-body.txt
+          gh issue create --title "v0.3 verified Windows build failure #${{ github.run_number }}" --body-file failure-body.txt
