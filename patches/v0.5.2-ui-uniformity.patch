@@ -1,0 +1,286 @@
+diff --git a/Source/PluginEditor.cpp b/Source/PluginEditor.cpp
+index bf81abb..27b04e8 100644
+--- a/Source/PluginEditor.cpp
++++ b/Source/PluginEditor.cpp
+@@ -24,7 +24,7 @@ namespace
+     void styleCaption (juce::Label& l, const juce::String& t)
+     {
+         l.setText (t, juce::dontSendNotification);
+-        l.setFont (uiFont (9.0f, juce::Font::bold).withExtraKerningFactor (0.075f));
++        l.setFont (uiFont (12.1f, juce::Font::bold).withExtraKerningFactor (0.025f));
+         l.setColour (juce::Label::textColourId, muted);
+         l.setJustificationType (juce::Justification::centredLeft);
+     }
+@@ -32,9 +32,9 @@ namespace
+     int gridColumnsForModule (int module, int controlCount, int width)
+     {
+         if (module == 0) return juce::jmax (1, controlCount);
+-        if (module == 3) return width >= 720 ? 6 : 5;
+-        if (module == 6) return width >= 720 ? 5 : 4;
+-        if (module == 4 || module == 5) return width >= 430 ? 5 : 4;
++        if (module == 3) return width >= 560 ? 6 : 5;
++        if (module == 6) return 5;
++        if (module == 4 || module == 5) return 5;
+         return 4;
+     }
+ }
+@@ -48,17 +48,17 @@ BrokenMachineAudioProcessorEditor::Knob::Knob (juce::AudioProcessorValueTreeStat
+     : parameterID (id), help (helpText), primary (isPrimary)
+ {
+     slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, primary ? 88 : 76, 22);
++    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 88, 22);
+     if (auto* parameter = state.getParameter (parameterID))
+         slider.setDoubleClickReturnValue (true, parameter->convertFrom0to1 (parameter->getDefaultValue()));
+-    slider.setMouseDragSensitivity (primary ? 190 : 155);
+-    slider.getProperties().set ("bmMacro", primary);
+-    slider.getProperties().set ("bmWarm", title == "DISTORTION" || title == "INSTABILITY");
++    slider.setMouseDragSensitivity (190);
++    slider.getProperties().set ("bmMacro", true);
++    slider.getProperties().set ("bmWarm", false);
+ 
+     label.setText (title, juce::dontSendNotification);
+     label.setJustificationType (juce::Justification::centred);
+-    label.setColour (juce::Label::textColourId, primary ? text : text.withAlpha (0.90f));
+-    label.setFont (uiFont (primary ? 12.1f : 10.0f, juce::Font::bold).withExtraKerningFactor (primary ? 0.035f : 0.015f));
++    label.setColour (juce::Label::textColourId, text);
++    label.setFont (uiFont (12.1f, juce::Font::bold).withExtraKerningFactor (0.035f));
+     label.setMinimumHorizontalScale (0.72f);
+ 
+     descriptorLabel.setText (descriptor, juce::dontSendNotification);
+@@ -75,8 +75,8 @@ BrokenMachineAudioProcessorEditor::BrokenMachineAudioProcessorEditor (BrokenMach
+ {
+     setLookAndFeel (&look);
+     setResizable (true, true);
+-    setResizeLimits (1240, 860, 1680, 1120);
+-    setSize (1440, 980);
++    setResizeLimits (1180, 800, 1680, 1120);
++    setSize (1240, 840);
+ 
+     titleLabel.setText ("BROKEN MACHINE", juce::dontSendNotification);
+     titleLabel.setFont (uiFont (27.0f, juce::Font::bold).withExtraKerningFactor (0.005f));
+@@ -169,15 +169,6 @@ BrokenMachineAudioProcessorEditor::BrokenMachineAudioProcessorEditor (BrokenMach
+     const juce::StringArray moduleTitles {
+         "INPUT", "COMPRESSION", "DRIVE", "SUSTAIN + REVERB", "PITCH + WIDTH", "TONE", "OUTPUT + MODEL"
+     };
+-    const juce::StringArray moduleSubtitles {
+-        "LEVEL / REACTIVE RESPONSE",
+-        "DYNAMICS / PICK SHAPE / DENSITY",
+-        "PREAMP / DISTORTION / TEXTURE",
+-        "NOTE DECAY / AMBIENCE / GHOST",
+-        "MICRO-PITCH / WOW / FLUTTER / DRIFT",
+-        "FILTERS / BODY / BITE / SPEAKER",
+-        "SYNTHETIC LAYER / FEEDBACK / FINAL MIX"
+-    };
+     const juce::StringArray moduleHelp {
+         "Controls input level and how strongly your picking dynamics steer the rest of Broken Machine.",
+         "All of the useful compressor controls are visible here at once: amount, pick shape, parallel density, threshold, ratio, attack and release.",
+@@ -191,7 +182,6 @@ BrokenMachineAudioProcessorEditor::BrokenMachineAudioProcessorEditor (BrokenMach
+     for (int i = 0; i < static_cast<int> (modules.size()); ++i)
+     {
+         modules[static_cast<size_t> (i)].title = moduleTitles[i];
+-        modules[static_cast<size_t> (i)].subtitle = moduleSubtitles[i];
+         modules[static_cast<size_t> (i)].help = moduleHelp[i];
+     }
+ 
+@@ -270,7 +260,7 @@ BrokenMachineAudioProcessorEditor::BrokenMachineAudioProcessorEditor (BrokenMach
+         l.setText (labelText, juce::dontSendNotification);
+         l.setJustificationType (juce::Justification::centred);
+         l.setColour (juce::Label::textColourId, muted);
+-        l.setFont (uiFont (8.3f, juce::Font::bold).withExtraKerningFactor (0.08f));
++        l.setFont (uiFont (12.1f, juce::Font::bold).withExtraKerningFactor (0.035f));
+         addAndMakeVisible (l);
+     };
+     setupMeterLabel (inputMeterLabel, "IN");
+@@ -454,14 +444,14 @@ void BrokenMachineAudioProcessorEditor::cancelSavePreset()
+ juce::Rectangle<int> BrokenMachineAudioProcessorEditor::getModuleContentBounds() const
+ {
+     auto area = getLocalBounds();
+-    area.removeFromTop (132);
+-    return area.reduced (16, 14);
++    area.removeFromTop (118);
++    return area.reduced (12, 10);
+ }
+ 
+ juce::Rectangle<int> BrokenMachineAudioProcessorEditor::getModuleCardBounds (int module) const
+ {
+     auto content = getModuleContentBounds();
+-    const int gap = 12;
++    const int gap = 8;
+     const int rowH = (content.getHeight() - gap * 2) / 3;
+     const int y0 = content.getY();
+     const int W = content.getWidth();
+@@ -590,7 +580,7 @@ void BrokenMachineAudioProcessorEditor::paint (juce::Graphics& g)
+     g.setGradientFill (background);
+     g.fillRect (getLocalBounds());
+ 
+-    auto headerRect = getLocalBounds().removeFromTop (132).toFloat();
++    auto headerRect = getLocalBounds().removeFromTop (118).toFloat();
+     juce::ColourGradient headerGrad (juce::Colour (0xff111816), headerRect.getCentreX(), headerRect.getY(), header, headerRect.getCentreX(), headerRect.getBottom(), false);
+     g.setGradientFill (headerGrad);
+     g.fillRect (headerRect);
+@@ -617,7 +607,7 @@ void BrokenMachineAudioProcessorEditor::paint (juce::Graphics& g)
+         g.setColour (border.withAlpha (0.86f));
+         g.drawRoundedRectangle (cell, 13.0f, 1.0f);
+ 
+-        auto headerBand = cell.reduced (1.0f).removeFromTop (44.0f);
++        auto headerBand = cell.reduced (1.0f).removeFromTop (34.0f);
+         g.setColour (juce::Colours::black.withAlpha (0.10f));
+         g.fillRoundedRectangle (headerBand, 12.0f);
+         g.setColour (borderSoft.withAlpha (0.90f));
+@@ -625,18 +615,15 @@ void BrokenMachineAudioProcessorEditor::paint (juce::Graphics& g)
+ 
+         const bool warm = i == driveModule || i == pitchModule;
+         g.setColour ((warm ? ember : accent).withAlpha (0.86f));
+-        g.fillRoundedRectangle (cell.getX() + 14.0f, cell.getY() + 14.0f, 3.0f, 20.0f, 1.5f);
++        g.fillRoundedRectangle (cell.getX() + 14.0f, cell.getY() + 9.0f, 3.0f, 17.0f, 1.5f);
+ 
+-        auto textArea = juce::Rectangle<float> (cell.getX() + 26.0f, cell.getY() + 9.0f, cell.getWidth() - 40.0f, 34.0f);
++        auto textArea = juce::Rectangle<float> (cell.getX() + 26.0f, cell.getY() + 4.0f, cell.getWidth() - 40.0f, 27.0f);
+         if (i == pitchModule)
+             textArea.setWidth (juce::jmax (80.0f, textArea.getWidth() - 124.0f));
+ 
+         g.setColour (text.withAlpha (0.97f));
+-        g.setFont (uiFont (13.0f, juce::Font::bold).withExtraKerningFactor (0.025f));
+-        g.drawText (modules[static_cast<size_t> (i)].title, textArea.removeFromTop (18.0f), juce::Justification::centredLeft);
+-        g.setColour (muted.withAlpha (0.82f));
+-        g.setFont (uiFont (8.4f, juce::Font::bold).withExtraKerningFactor (0.04f));
+-        g.drawText (modules[static_cast<size_t> (i)].subtitle, textArea, juce::Justification::centredLeft);
++        g.setFont (uiFont (19.5f, juce::Font::bold).withExtraKerningFactor (0.025f));
++        g.drawText (modules[static_cast<size_t> (i)].title, textArea, juce::Justification::centredLeft);
+     }
+ }
+ 
+@@ -675,15 +662,15 @@ void BrokenMachineAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
+ void BrokenMachineAudioProcessorEditor::resized()
+ {
+     auto area = getLocalBounds();
+-    auto head = area.removeFromTop (132).reduced (18, 13);
++    auto head = area.removeFromTop (118).reduced (14, 10);
+ 
+-    auto brand = head.removeFromLeft (310);
+-    brand.removeFromLeft (40);
+-    titleLabel.setBounds (brand.removeFromTop (38));
+-    subtitleLabel.setBounds (brand.removeFromTop (21));
++    auto brand = head.removeFromLeft (280);
++    brand.removeFromLeft (38);
++    titleLabel.setBounds (brand.removeFromTop (34));
++    subtitleLabel.setBounds (brand.removeFromTop (19));
+     statusLabel.setBounds (brand.removeFromTop (18));
+ 
+-    auto meters = head.removeFromRight (122).reduced (5, 4);
++    auto meters = head.removeFromRight (118).reduced (4, 2);
+     auto placeMeter = [&meters] (LevelMeter& meter, juce::Label& label)
+     {
+         auto cell = meters.removeFromLeft (38);
+@@ -694,12 +681,12 @@ void BrokenMachineAudioProcessorEditor::resized()
+     placeMeter (outputMeter, outputMeterLabel);
+     placeMeter (grMeter, grMeterLabel);
+ 
+-    helpButton.setBounds (head.removeFromRight (42).reduced (1, 3));
+-    head.removeFromRight (8);
++    helpButton.setBounds (head.removeFromRight (40).reduced (1, 2));
++    head.removeFromRight (6);
+ 
+     auto controls = head.reduced (3, 0);
+-    auto row1 = controls.removeFromTop (47).reduced (3, 4);
+-    presetCaption.setBounds (row1.removeFromLeft (58));
++    auto row1 = controls.removeFromTop (46).reduced (2, 3);
++    presetCaption.setBounds (row1.removeFromLeft (68));
+ 
+     if (! savingPreset)
+     {
+@@ -726,20 +713,25 @@ void BrokenMachineAudioProcessorEditor::resized()
+         cancelSaveButton.setBounds (row1.removeFromLeft (cancelW).reduced (0, 1));
+     }
+ 
+-    auto row2 = controls.removeFromTop (47).reduced (3, 4);
+-    inputTypeCaption.setBounds (row2.removeFromLeft (72));
++    auto row2 = controls.removeFromTop (46).reduced (2, 3);
++    inputTypeCaption.setBounds (row2.removeFromLeft (86));
+     inputProfileBox.setBounds (row2.removeFromLeft (132).reduced (0, 1));
+     row2.removeFromLeft (10);
+-    signalOrderCaption.setBounds (row2.removeFromLeft (88));
++    signalOrderCaption.setBounds (row2.removeFromLeft (104));
+     topologyBox.setBounds (row2.removeFromLeft (juce::jlimit (190, 270, row2.getWidth() / 2)).reduced (0, 1));
+     row2.removeFromLeft (12);
+     autoGainButton.setBounds (row2.removeFromLeft (102));
+     safeButton.setBounds (row2.removeFromLeft (88));
+ 
++    // Every parameter uses one shared physical control size. The Input control is no longer
++    // a special oversized class, so resizing can never create mixed knob sizes.
++    const int uniformKnobW = juce::jlimit (80, 94, 80 + (getWidth() - 1180) / 36);
++    const int uniformKnobH = juce::jlimit (58, 76, 58 + (getHeight() - 800) / 18);
++
+     for (int module = 0; module < static_cast<int> (modules.size()); ++module)
+     {
+         auto cardBounds = getModuleCardBounds (module);
+-        auto body = cardBounds.reduced (12, 10).withTrimmedTop (43).withTrimmedBottom (3);
++        auto body = cardBounds.reduced (9, 7).withTrimmedTop (33).withTrimmedBottom (2);
+         const auto& indices = modules[static_cast<size_t> (module)].knobIndices;
+         if (indices.empty()) continue;
+ 
+@@ -756,18 +748,14 @@ void BrokenMachineAudioProcessorEditor::resized()
+                                               (i % columns == columns - 1) ? body.getRight() - (body.getX() + (i % columns) * cellW) : cellW,
+                                               (i / columns == rows - 1) ? body.getBottom() - (body.getY() + (i / columns) * cellH) : cellH).reduced (3, 1);
+             auto& k = *knobs[static_cast<size_t> (indices[static_cast<size_t> (i)])];
+-            const int labelH = k.primary ? 22 : 20;
++            const int labelH = 22;
+             k.label.setBounds (cell.removeFromTop (labelH));
+             if (k.descriptorLabel.getText().isNotEmpty())
+                 k.descriptorLabel.setBounds (cell.removeFromBottom (15));
+             else
+                 k.descriptorLabel.setBounds ({});
+ 
+-            const int maxW = (module == inputModule) ? (k.primary ? 118 : 106) : (k.primary ? 92 : 78);
+-            const int maxH = (module == inputModule) ? 142 : (k.primary ? 112 : 100);
+-            const int w = juce::jmin (maxW, cell.getWidth());
+-            const int h = juce::jmin (maxH, cell.getHeight());
+-            k.slider.setBounds (juce::Rectangle<int> (w, h).withCentre (cell.getCentre()));
++            k.slider.setBounds (juce::Rectangle<int> (uniformKnobW, uniformKnobH).withCentre (cell.getCentre()));
+         }
+     }
+ 
+diff --git a/Source/PluginEditor.h b/Source/PluginEditor.h
+index a19be70..595292a 100644
+--- a/Source/PluginEditor.h
++++ b/Source/PluginEditor.h
+@@ -38,7 +38,6 @@ private:
+     struct ModuleCard
+     {
+         juce::String title;
+-        juce::String subtitle;
+         juce::String help;
+         std::vector<int> knobIndices;
+     };
+diff --git a/Source/UI/CustomLookAndFeel.cpp b/Source/UI/CustomLookAndFeel.cpp
+index 2eb4549..96e6a01 100644
+--- a/Source/UI/CustomLookAndFeel.cpp
++++ b/Source/UI/CustomLookAndFeel.cpp
+@@ -156,7 +156,7 @@ void BrokenLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b
+ 
+ void BrokenLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button, bool, bool)
+ {
+-    g.setFont (uiFont (10.8f, juce::Font::bold));
++    g.setFont (uiFont (12.1f, juce::Font::bold));
+     g.setColour (button.getToggleState() ? ink : text.withAlpha (button.isEnabled() ? 0.92f : 0.40f));
+     g.drawText (button.getButtonText(), button.getLocalBounds().reduced (8, 0), juce::Justification::centred, true);
+ }
+@@ -189,7 +189,7 @@ void BrokenLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height,
+ 
+ juce::Font BrokenLookAndFeel::getComboBoxFont (juce::ComboBox&)
+ {
+-    return uiFont (11.4f, juce::Font::bold);
++    return uiFont (12.1f, juce::Font::bold);
+ }
+ 
+ juce::Font BrokenLookAndFeel::getPopupMenuFont()
+@@ -223,7 +223,7 @@ void BrokenLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton&
+     g.fillEllipse (knobX, pill.getCentreY() - knob * 0.5f, knob, knob);
+ 
+     g.setColour (highlighted ? text : muted.brighter (0.06f));
+-    g.setFont (uiFont (10.5f, juce::Font::bold));
++    g.setFont (uiFont (12.1f, juce::Font::bold));
+     g.drawText (button.getButtonText(), r.withTrimmedLeft (39.0f), juce::Justification::centredLeft, true);
+ }
+ 
