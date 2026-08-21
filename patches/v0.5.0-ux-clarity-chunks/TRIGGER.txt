@@ -1,0 +1,1 @@
+Trigger canonical v0.5.0 Windows validation after workflow installation.
