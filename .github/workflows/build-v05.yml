@@ -41,6 +41,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           try {
+            # Verified v0.3 base source.
             $names = @("part01.txt","part02.txt","part03.txt","part04.txt","part05a.txt","part05b1.txt","part05b2.txt","part05b3.txt","part06.txt")
             $encoded = ""
             foreach ($name in $names) {
@@ -70,6 +71,7 @@ jobs:
               } finally { $input.Dispose() }
             }
 
+            # v0.4.0 research pass.
             $v04b64 = (Get-Content "patches\v0.4.0-research-pass.patch.gz.b64" -Raw).Trim()
             $v04b64Hash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($v04b64)))).Replace('-','').ToLowerInvariant()
             if ($v04b64Hash -ne "2683052682ebc7a7ba65317fe9059aae89d540155231b5d5270ac06626dbdb7b") { throw "v0.4 transport mismatch: $v04b64Hash" }
@@ -81,6 +83,7 @@ jobs:
             & git apply --unsafe-paths --directory="source-root/BrokenMachine-v0.3" "v0.4.0.patch"
             if ($LASTEXITCODE -ne 0) { throw "v0.4 patch failed: $LASTEXITCODE" }
 
+            # v0.4.1 professional GUI pass.
             $v041b64 = ""
             foreach ($name in @("part01.txt","part02.txt","part03.txt","part04.txt")) {
               $v041b64 += (Get-Content (Join-Path "patches\v0.4.1-gui-chunks" $name) -Raw).Trim()
@@ -96,6 +99,7 @@ jobs:
             & git apply --unsafe-paths --directory="source-root/BrokenMachine-v0.3" "v0.4.1.patch"
             if ($LASTEXITCODE -ne 0) { throw "v0.4.1 patch failed: $LASTEXITCODE" }
 
+            # Hash all core DSP and parameter-definition files before v0.5.
             function Get-Core-Hash([string]$projectRoot) {
               $files = @(
                 Get-ChildItem (Join-Path $projectRoot "Source\DSP") -Recurse -File
@@ -112,6 +116,7 @@ jobs:
             }
             $coreBefore = Get-Core-Hash $root
 
+            # v0.5 UX/clarity pass.
             $v05b64 = ""
             foreach ($name in @("part01.txt","part02.txt","part03.txt","part04.txt","part05.txt")) {
               $p = Join-Path "patches\v0.5.0-ux-clarity-chunks" $name
@@ -128,28 +133,41 @@ jobs:
             if ($v05PatchHash -ne "bf92e5aeba42bd947f48b1dc75a36f5a7ae8bf835bf1b0197b47281ed9f40d6f") { throw "v0.5 patch mismatch: $v05PatchHash" }
 
             $allowed = @(
-              ".github/workflows/build-windows.yml","BUILD_STATUS.md","BUILD_WINDOWS.bat","CMakeLists.txt","INSTALL.txt","README.md",
-              "Source/PluginEditor.cpp","Source/PluginEditor.h","Source/PluginProcessor.cpp","Source/PluginProcessor.h",
-              "Source/UI/MachineMonitor.cpp","Source/UI/MachineMonitor.h"
+              ".github/workflows/build-windows.yml",
+              "BUILD_STATUS.md",
+              "BUILD_WINDOWS.bat",
+              "CMakeLists.txt",
+              "INSTALL.txt",
+              "README.md",
+              "Source/PluginEditor.cpp",
+              "Source/PluginEditor.h",
+              "Source/PluginProcessor.cpp",
+              "Source/PluginProcessor.h",
+              "Source/UI/MachineMonitor.cpp",
+              "Source/UI/MachineMonitor.h"
             )
             $changed = @(& git apply --numstat "v0.5.0.patch" | ForEach-Object { ($_ -split "`t")[-1].Replace('\','/') })
             $unexpected = @($changed | Where-Object { $_ -notin $allowed })
             if ($unexpected.Count) { throw "v0.5 patch touches unexpected paths: $($unexpected -join ', ')" }
             if ($changed.Count -ne 12) { throw "Expected 12 v0.5 paths, patch contains $($changed.Count)" }
 
-            & git apply --unsafe-paths --directory="source-root/BrokenMachine-v0.3" "v0.5.0.patch"
-            if ($LASTEXITCODE -ne 0) { throw "v0.5 patch failed: $LASTEXITCODE" }
+            & git apply --unsafe-paths --exclude="BUILD_STATUS.md" --directory="source-root/BrokenMachine-v0.3" "v0.5.0.patch"
+            if ($LASTEXITCODE -ne 0) { throw "v0.5 patch failed outside BUILD_STATUS.md: $LASTEXITCODE" }
+            @("Broken Machine v0.5.0", "Windows validation source reconstructed from verified v0.4.1 + v0.5 UX patch.") | Set-Content (Join-Path $root "BUILD_STATUS.md")
 
             $coreAfter = Get-Core-Hash $root
             if ($coreAfter -ne $coreBefore) { throw "CORE DSP/PARAMETERS CHANGED: before=$coreBefore after=$coreAfter" }
+
             $cmake = Get-Content (Join-Path $root "CMakeLists.txt") -Raw
             if (-not $cmake.Contains("VERSION 0.5.0")) { throw "CMake version is not 0.5.0" }
+
             $editor = Get-Content (Join-Path $root "Source\PluginEditor.cpp") -Raw
             foreach ($marker in @("INPUT TYPE","SIGNAL ORDER","PICK RESPONSE","SUSTAIN + REVERB","HELP MODE","MACHINE MONITOR")) {
               if (-not $editor.Contains($marker)) { throw "Missing v0.5 editor marker '$marker'" }
             }
             if ($editor.Contains("VARIATION")) { throw "Variation control still present in v0.5 editor" }
             if ($editor.Contains("DEEP EDIT")) { throw "Old global Deep Edit UI still present" }
+
             $monitor = Get-Content (Join-Path $root "Source\UI\MachineMonitor.cpp") -Raw
             foreach ($marker in @("performFrequencyOnlyForwardTransform","FX ENERGY","PITCH MOVE","PREAMP > MODELER > REVERB")) {
               if (-not $monitor.Contains($marker)) { throw "Missing Machine Monitor marker '$marker'" }
@@ -158,9 +176,13 @@ jobs:
             foreach ($marker in @("copyAnalysisData","analysisInput","transientMeter","fxEnergyMeter")) {
               if (-not $processor.Contains($marker)) { throw "Missing passive analysis marker '$marker'" }
             }
+
             @(
-              "Base source SHA-256: $baseHash","v0.4 patch SHA-256: $v04PatchHash","v0.4.1 patch SHA-256: $v041PatchHash",
-              "v0.5 patch SHA-256: $v05PatchHash","Core DSP/parameters manifest before/after v0.5: $coreBefore",
+              "Base source SHA-256: $baseHash",
+              "v0.4 patch SHA-256: $v04PatchHash",
+              "v0.4.1 patch SHA-256: $v041PatchHash",
+              "v0.5 patch SHA-256: $v05PatchHash",
+              "Core DSP/parameters manifest before/after v0.5: $coreBefore",
               "v0.5 changed paths: $($changed -join ', ')"
             ) | Set-Content source-validation.txt
             Get-Content source-validation.txt
@@ -211,7 +233,8 @@ jobs:
             foreach ($preset in @("Soft Focus","Baritone Wire","Distorted Halo","Synthetic Wire","Hairline","Ghost Bloom","Unstable Clean","Machine Collapse")) {
               if (-not $processor.Contains($preset)) { throw "Missing factory tone $preset" }
             }
-            Write-Host "Static audit passed: 74 parameters, four rig paths, factory tones intact."
+            if ([regex]::IsMatch($processor, 'processBlock[\s\S]{0,30000}\b(new|malloc|calloc|realloc)\b')) { throw "Potential audio-thread heap allocation detected in processBlock region" }
+            Write-Host "Static audit passed: 74 parameters, four rig paths, factory tones intact, no obvious audio-thread allocation."
           }
           catch { @("Stage: static source audit","Message: $($_.Exception.Message)","",($_ | Out-String)) | Set-Content "..\..\build-error.txt"; throw }
 
@@ -229,7 +252,8 @@ jobs:
             if ($bytes.Length -lt 512 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw "Binary is not Windows MZ/PE" }
             $pe = [BitConverter]::ToInt32($bytes,0x3c)
             if ($bytes[$pe] -ne 0x50 -or $bytes[$pe+1] -ne 0x45) { throw "Invalid PE signature" }
-            if ([BitConverter]::ToUInt16($bytes,$pe+4) -ne 0x8664) { throw "Binary is not x86-64" }
+            $machine = [BitConverter]::ToUInt16($bytes,$pe+4)
+            if ($machine -ne 0x8664) { throw ("Wrong PE machine 0x{0:x4}" -f $machine) }
             $vi = (Get-Item $bin.FullName).VersionInfo
             $version = $vi.ProductVersion
             if ([string]::IsNullOrWhiteSpace($version)) { $version = $vi.FileVersion }
@@ -243,7 +267,14 @@ jobs:
             $moduleText = Get-Content $module.FullName -Raw
             if (-not $moduleText.Contains('"Version": "0.5.0"')) { throw "moduleinfo is not version 0.5.0" }
             $binHash = (Get-FileHash $bin.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            @("Broken Machine v0.5.0 validation","PE machine: 0x8664 x86-64","Version: $version","Binary SHA-256: $binHash","Core DSP and parameter definitions unchanged from v0.4.1") | Set-Content BINARY_VALIDATION.txt
+            @(
+              "Broken Machine v0.5.0 validation",
+              "PE machine: 0x8664 x86-64",
+              "Version: $version",
+              "Binary SHA-256: $binHash",
+              "Core DSP and parameter definitions unchanged from v0.4.1",
+              "Verified strings: $($checks -join ', ')"
+            ) | Set-Content BINARY_VALIDATION.txt
             New-Item -ItemType Directory -Force package | Out-Null
             Copy-Item $vst3.FullName "package\Broken Machine.vst3" -Recurse
             Copy-Item INSTALL.txt package\INSTALL.txt
@@ -262,8 +293,10 @@ jobs:
           $dst = Join-Path (Get-Location) "source-package\BrokenMachine-v0.5.0"
           New-Item -ItemType Directory -Force $dst | Out-Null
           Get-ChildItem $src -Recurse -File | Where-Object {
-            $_.FullName -notmatch '\\build\\' -and $_.FullName -notmatch '\\package\\' -and
-            $_.Extension -notin @('.log','.zip','.obj','.pdb','.dll','.exe') -and $_.Name -ne 'BINARY_VALIDATION.txt'
+            $_.FullName -notmatch '\\build\\' -and
+            $_.FullName -notmatch '\\package\\' -and
+            $_.Extension -notin @('.log','.zip','.obj','.pdb','.dll','.exe') -and
+            $_.Name -ne 'BINARY_VALIDATION.txt'
           } | ForEach-Object {
             $rel = $_.FullName.Substring($src.Length + 1)
             $target = Join-Path $dst $rel
