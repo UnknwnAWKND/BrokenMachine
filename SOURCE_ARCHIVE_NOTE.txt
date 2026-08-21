@@ -1,0 +1,1 @@
+Temporary source packaging note: the Windows build workflow consumes BrokenMachine-v0.1.0-source.zip. Once the first Windows compiler pass is clean, the source tree can be expanded into normal repository files.
