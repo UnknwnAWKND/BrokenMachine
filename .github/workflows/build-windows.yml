@@ -20,13 +20,49 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract source project and apply audited overrides
+      - name: Decode source archive, extract project, and apply audited overrides
         shell: pwsh
         run: |
-          Expand-Archive -Path "BrokenMachine-v0.1.0-source.zip" -DestinationPath "source" -Force
+          $storedArchive = "BrokenMachine-v0.1.0-source.zip"
+          if (-not (Test-Path $storedArchive)) {
+            throw "Stored source archive was not found."
+          }
+
+          # The GitHub connector stored the ZIP payload as base64 text. Detect that
+          # representation and reconstruct a real ZIP before Expand-Archive. This also
+          # remains compatible if the repository later contains a normal binary ZIP.
+          $bytes = [System.IO.File]::ReadAllBytes($storedArchive)
+          $isZip = $bytes.Length -ge 2 -and $bytes[0] -eq 0x50 -and $bytes[1] -eq 0x4B
+
+          if ($isZip) {
+            $realArchive = $storedArchive
+            Write-Host "Source archive is already a binary ZIP."
+          }
+          else {
+            Write-Host "Source archive is base64 text; decoding it first."
+            $encoded = [System.Text.Encoding]::UTF8.GetString($bytes) -replace '\s', ''
+            try {
+              $decoded = [System.Convert]::FromBase64String($encoded)
+            }
+            catch {
+              throw "Source archive was neither a binary ZIP nor valid base64 text. $($_.Exception.Message)"
+            }
+
+            $realArchive = "BrokenMachine-source-decoded.zip"
+            [System.IO.File]::WriteAllBytes($realArchive, $decoded)
+
+            $decodedBytes = [System.IO.File]::ReadAllBytes($realArchive)
+            if ($decodedBytes.Length -lt 2 -or $decodedBytes[0] -ne 0x50 -or $decodedBytes[1] -ne 0x4B) {
+              throw "Decoded source payload is not a valid ZIP header."
+            }
+          }
+
+          Expand-Archive -LiteralPath $realArchive -DestinationPath "source" -Force
+
           if (-not (Test-Path "source\BrokenMachine\CMakeLists.txt")) {
             throw "Source archive did not extract to source\BrokenMachine as expected."
           }
+
           Copy-Item -Path "patches\Source\Parameters\Parameters.cpp" -Destination "source\BrokenMachine\Source\Parameters\Parameters.cpp" -Force
           Copy-Item -Path "patches\Source\DSP\WowFlutter.cpp" -Destination "source\BrokenMachine\Source\DSP\WowFlutter.cpp" -Force
 
