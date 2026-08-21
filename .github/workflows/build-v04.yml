@@ -9,6 +9,13 @@ on:
       - "patches/v0.3.1-state-reset.patch"
       - "patches/v0.4.0-research-pass.patch.gz"
       - ".github/workflows/build-v04.yml"
+  pull_request:
+    branches: [ "v0.3-tone-overhaul" ]
+    paths:
+      - "v0.3-source-correct/**"
+      - "patches/v0.3.1-state-reset.patch"
+      - "patches/v0.4.0-research-pass.patch.gz"
+      - ".github/workflows/build-v04.yml"
 
 permissions:
   contents: read
@@ -197,5 +204,3 @@ jobs:
           path: BrokenMachine-v0.4.0-source.zip
           if-no-files-found: error
           retention-days: 30
-
-# verification trigger
