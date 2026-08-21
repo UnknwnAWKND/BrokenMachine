@@ -8,6 +8,8 @@ on:
     paths:
       - "BrokenMachine-v0.1.0-source.zip"
       - ".github/workflows/build-windows.yml"
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   build-windows-vst3:
