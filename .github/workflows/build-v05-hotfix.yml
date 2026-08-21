@@ -123,3 +123,5 @@ jobs:
         run: |
           $result = "${{ job.status }}"
           gh issue create --title "v0.5.0 HOTFIX build $result" --body "Run ID: ${{ github.run_id }}`nCommit: ${{ github.sha }}"
+
+# trigger existing workflow
