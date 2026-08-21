@@ -7,14 +7,14 @@ on:
     paths:
       - "v0.3-source-correct/**"
       - "patches/v0.3.1-state-reset.patch"
-      - "patches/v0.4.0-research-pass.patch.gz"
+      - "patches/v0.4.0-research-pass.patch.gz.b64"
       - ".github/workflows/build-v04.yml"
   pull_request:
     branches: [ "v0.3-tone-overhaul" ]
     paths:
       - "v0.3-source-correct/**"
       - "patches/v0.3.1-state-reset.patch"
-      - "patches/v0.4.0-research-pass.patch.gz"
+      - "patches/v0.4.0-research-pass.patch.gz.b64"
       - ".github/workflows/build-v04.yml"
 
 permissions:
@@ -27,34 +27,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Reconstruct and patch verified source
+      - name: Reconstruct verified v0.4 source
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
           $names = @("part01.txt","part02.txt","part03.txt","part04.txt","part05a.txt","part05b1.txt","part05b2.txt","part05b3.txt","part06.txt")
           $encoded = ""
-          foreach ($name in $names) {
-            $p = Join-Path "v0.3-source-correct" $name
-            if (-not (Test-Path $p)) { throw "Missing base source piece $p" }
-            $encoded += (Get-Content $p -Raw).Trim()
-          }
-          if ($encoded.Length -ne 69504) { throw "Unexpected base64 length $($encoded.Length)" }
+          foreach ($name in $names) { $encoded += (Get-Content (Join-Path "v0.3-source-correct" $name) -Raw).Trim() }
+          if ($encoded.Length -ne 69504) { throw "Unexpected v0.3 base64 length $($encoded.Length)" }
           [IO.File]::WriteAllBytes("BrokenMachine-v0.3-source.zip", [Convert]::FromBase64String($encoded))
           $baseHash = (Get-FileHash "BrokenMachine-v0.3-source.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($baseHash -ne "0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b") { throw "Base source SHA mismatch: $baseHash" }
+          if ($baseHash -ne "0fbe51b5364d8326e5b118a53c6742f08074f49ba63aad3de13e3354db7e8f3b") { throw "v0.3 base SHA mismatch: $baseHash" }
           Expand-Archive "BrokenMachine-v0.3-source.zip" "source-root" -Force
           $root = "source-root\BrokenMachine-v0.3"
 
           & git apply --unsafe-paths --directory="source-root/BrokenMachine-v0.3" "patches/v0.3.1-state-reset.patch"
-          if ($LASTEXITCODE -ne 0) { throw "v0.3.1 patch failed with exit code $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "v0.3.1 patch failed: $LASTEXITCODE" }
 
-          $gzipPath = "patches\v0.4.0-research-pass.patch.gz"
-          if (-not (Test-Path $gzipPath)) { throw "Missing v0.4.0 patch gzip" }
-          $gzipHash = (Get-FileHash $gzipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $b64 = (Get-Content "patches\v0.4.0-research-pass.patch.gz.b64" -Raw).Trim()
+          $b64HashBytes = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($b64))
+          $b64Hash = ([BitConverter]::ToString($b64HashBytes)).Replace('-','').ToLowerInvariant()
+          if ($b64Hash -ne "2683052682ebc7a7ba65317fe9059aae89d540155231b5d5270ac06626dbdb7b") { throw "v0.4 base64 payload mismatch: $b64Hash" }
+          [IO.File]::WriteAllBytes("v0.4.0-research-pass.patch.gz", [Convert]::FromBase64String($b64))
+          $gzipHash = (Get-FileHash "v0.4.0-research-pass.patch.gz" -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($gzipHash -ne "7bd0a05684b43717d6d059b21d6c928d6182d5e31827e7d8a7c54dd1029e3a92") { throw "v0.4 gzip SHA mismatch: $gzipHash" }
-          $input = [IO.File]::OpenRead($gzipPath)
+
+          $input = [IO.File]::OpenRead("v0.4.0-research-pass.patch.gz")
           try {
-            $gzip = New-Object IO.Compression.GZipStream($input, [IO.Compression.CompressionMode]::Decompress)
+            $gzip = [IO.Compression.GZipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)
             try {
               $output = [IO.File]::Create("v0.4.0-research-pass.patch")
               try { $gzip.CopyTo($output) } finally { $output.Dispose() }
@@ -62,14 +63,15 @@ jobs:
           } finally { $input.Dispose() }
           $patchHash = (Get-FileHash "v0.4.0-research-pass.patch" -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($patchHash -ne "e7f29985f4cb0200454c4de4d8a89f17291ed4a475d0dbbe47327f0662135fae") { throw "v0.4 patch SHA mismatch: $patchHash" }
+
           & git apply --unsafe-paths --directory="source-root/BrokenMachine-v0.3" "v0.4.0-research-pass.patch"
-          if ($LASTEXITCODE -ne 0) { throw "v0.4.0 patch failed with exit code $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "v0.4 patch failed: $LASTEXITCODE" }
 
           $files = @(Get-ChildItem $root -Recurse -File)
-          if ($files.Count -ne 41) { throw "Expected 41 clean project/source files after v0.4 patch, found $($files.Count)" }
+          if ($files.Count -ne 41) { throw "Expected 41 source/project files, found $($files.Count)" }
           $cmake = Get-Content "$root\CMakeLists.txt" -Raw
           if (-not $cmake.Contains("VERSION 0.4.0")) { throw "CMake version is not 0.4.0" }
-          $checks = @(
+          $markers = @(
             @("Source\DSP\Saturator.cpp", "Oversampling<float>"),
             @("Source\DSP\SpatialProcessor.cpp", "wetOversampling"),
             @("Source\DSP\MicroDouble.cpp", "constant-ratio"),
@@ -78,55 +80,42 @@ jobs:
             @("Source\Parameters\Parameters.h", "ghostSizeMs"),
             @("Source\DSP\SafetyLimiter.cpp", "gain = 1.0f")
           )
-          foreach ($check in $checks) {
-            $text = Get-Content (Join-Path $root $check[0]) -Raw
-            if (-not $text.Contains($check[1])) { throw "Marker '$($check[1])' missing from $($check[0])" }
+          foreach ($m in $markers) {
+            $text = Get-Content (Join-Path $root $m[0]) -Raw
+            if (-not $text.Contains($m[1])) { throw "Missing marker '$($m[1])' in $($m[0])" }
           }
-          Write-Host "Verified base source SHA-256: $baseHash"
-          Write-Host "Verified v0.4 patch SHA-256: $patchHash"
+          Write-Host "Source reconstruction passed. Base=$baseHash Patch=$patchHash"
 
       - name: Configure VS2022 x64
         shell: pwsh
         working-directory: source-root/BrokenMachine-v0.3
-        run: |
-          $ErrorActionPreference = "Continue"
-          & cmake -S . -B build -G "Visual Studio 17 2022" -A x64 *> configure.log
-          $c = $LASTEXITCODE
-          Get-Content configure.log
-          if ($c -ne 0) { exit $c }
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 
-      - name: Build VST3
+      - name: Build VST3 Release
         shell: pwsh
         working-directory: source-root/BrokenMachine-v0.3
-        run: |
-          $ErrorActionPreference = "Continue"
-          & cmake --build build --config Release --target BrokenMachine_VST3 --parallel *> build.log
-          $c = $LASTEXITCODE
-          Get-Content build.log
-          if ($c -ne 0) { exit $c }
+        run: cmake --build build --config Release --target BrokenMachine_VST3 --parallel
 
       - name: Static source audit
         shell: pwsh
         working-directory: source-root/BrokenMachine-v0.3
         run: |
           $ErrorActionPreference = "Stop"
-          $paramHeader = Get-Content "Source\Parameters\Parameters.h" -Raw
-          $ids = [regex]::Matches($paramHeader, 'inline constexpr auto\s+(\w+)\s*=') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+          $header = Get-Content "Source\Parameters\Parameters.h" -Raw
+          $ids = [regex]::Matches($header, 'inline constexpr auto\s+(\w+)\s*=') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
           if ($ids.Count -ne 74) { throw "Expected 74 parameter IDs, found $($ids.Count)" }
           $refs = @()
           Get-ChildItem Source -Recurse -Include *.cpp,*.h | ForEach-Object {
             $t = Get-Content $_.FullName -Raw
             [regex]::Matches($t, 'Params::ID::(\w+)') | ForEach-Object { $refs += $_.Groups[1].Value }
           }
-          $undef = @($refs | Sort-Object -Unique | Where-Object { $_ -notin $ids })
-          if ($undef.Count) { throw "Undefined parameter references: $($undef -join ', ')" }
+          $undefined = @($refs | Sort-Object -Unique | Where-Object { $_ -notin $ids })
+          if ($undefined.Count) { throw "Undefined parameter refs: $($undefined -join ', ')" }
           $processor = Get-Content "Source\PluginProcessor.cpp" -Raw
-          foreach ($route in @("case 0:","case 1:","case 2:","case 3:")) {
-            if (-not $processor.Contains($route)) { throw "Missing routing marker $route" }
-          }
-          Write-Host "Static audit passed: 74 parameters, all referenced IDs defined, four routing paths present."
+          foreach ($route in @("case 0:","case 1:","case 2:","case 3:")) { if (-not $processor.Contains($route)) { throw "Missing route $route" } }
+          Write-Host "Static audit passed: 74 parameters and all four rig paths present."
 
-      - name: Validate binary and package
+      - name: Validate and package binary
         shell: pwsh
         working-directory: source-root/BrokenMachine-v0.3
         run: |
@@ -148,26 +137,20 @@ jobs:
           $ascii = [Text.Encoding]::ASCII.GetString($bytes)
           $checks = @("Soft Focus","Distorted Halo","Baritone Wire","Hairline","Ghost Bloom","Unstable Clean","Machine Collapse","Preamp First","Halo First","Parallel Rig","Modeler First","GetPluginFactory","InitDll","ExitDll")
           $missing = @($checks | Where-Object { -not $ascii.Contains($_) })
-          if ($missing.Count) { throw "Missing expected binary strings: $($missing -join ', ')" }
-          $moduleInfo = Get-ChildItem $vst3.FullName -Recurse -File -Filter "moduleinfo.json" | Select-Object -First 1
-          if (-not $moduleInfo) { throw "moduleinfo.json missing" }
-          $moduleText = Get-Content $moduleInfo.FullName -Raw
-          if (-not $moduleText.Contains('"Version": "0.4.0"')) { throw "moduleinfo version is not 0.4.0" }
+          if ($missing.Count) { throw "Missing binary strings: $($missing -join ', ')" }
+          $module = Get-ChildItem $vst3.FullName -Recurse -File -Filter "moduleinfo.json" | Select-Object -First 1
+          if (-not $module) { throw "moduleinfo.json missing" }
+          $moduleText = Get-Content $module.FullName -Raw
+          if (-not $moduleText.Contains('"Version": "0.4.0"')) { throw "moduleinfo is not version 0.4.0" }
           $binHash = (Get-FileHash $bin.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          @(
-            "Broken Machine v0.4.0 validation",
-            "PE machine: 0x8664 x86-64",
-            "Version: $version",
-            "Binary SHA-256: $binHash",
-            "Verified strings: $($checks -join ', ')"
-          ) | Set-Content BINARY_VALIDATION.txt
+          @("Broken Machine v0.4.0 validation","PE machine: 0x8664 x86-64","Version: $version","Binary SHA-256: $binHash","Verified strings: $($checks -join ', ')") | Set-Content BINARY_VALIDATION.txt
           New-Item -ItemType Directory -Force package | Out-Null
           Copy-Item $vst3.FullName "package\Broken Machine.vst3" -Recurse
           Copy-Item INSTALL.txt package\INSTALL.txt
           if (Test-Path RESEARCH.md) { Copy-Item RESEARCH.md package\RESEARCH.md }
           Copy-Item BINARY_VALIDATION.txt package\BINARY_VALIDATION.txt
           Compress-Archive "package\*" "BrokenMachine-v0.4.0-Windows-VST3.zip" -Force
-          Write-Host "Binary SHA-256: $binHash"
+          Write-Host "Validated v0.4.0 binary SHA-256: $binHash"
 
       - name: Package clean source
         shell: pwsh
@@ -177,10 +160,8 @@ jobs:
           $dst = Join-Path (Get-Location) "source-package\BrokenMachine-v0.4.0"
           New-Item -ItemType Directory -Force $dst | Out-Null
           Get-ChildItem $src -Recurse -File | Where-Object {
-            $_.FullName -notmatch '\\build\\' -and
-            $_.FullName -notmatch '\\package\\' -and
-            $_.Extension -notin @('.log','.zip','.obj','.pdb','.dll','.exe') -and
-            $_.Name -ne 'BINARY_VALIDATION.txt'
+            $_.FullName -notmatch '\\build\\' -and $_.FullName -notmatch '\\package\\' -and
+            $_.Extension -notin @('.log','.zip','.obj','.pdb','.dll','.exe') -and $_.Name -ne 'BINARY_VALIDATION.txt'
           } | ForEach-Object {
             $rel = $_.FullName.Substring($src.Length + 1)
             $target = Join-Path $dst $rel
