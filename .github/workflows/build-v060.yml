@@ -176,7 +176,8 @@ jobs:
           }
 
           $scaled = @{
-            "10-vintage-125-percent.png" = @(1313, 875)
+            # JUCE truncates a half pixel for component snapshots: 1050 * 1.25 = 1312.5.
+            "10-vintage-125-percent.png" = @(1312, 875)
             "11-night-150-percent.png" = @(1575, 1050)
           }
           foreach ($entry in $scaled.GetEnumerator()) {
@@ -334,6 +335,7 @@ jobs:
           retention-days: 30
 
       - name: Upload v0.6.0 validation evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: BrokenMachine-v0.6.0-Validation-Evidence
