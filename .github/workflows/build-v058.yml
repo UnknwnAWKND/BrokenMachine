@@ -122,7 +122,7 @@ jobs:
             "Source/PluginProcessor.h"
           )
 
-          Install-Overlay "v0.5.8" 64924 "cbb853584691228b49d0542ef78e9fdc827245895069f222596349e0e4e17169" "974fe31c4004c6e493734db9cda5b66de21f62932d644cb72500944610e572bc" @(
+          Install-Overlay "v0.5.8" 65072 "ffa0e16218092ce6f245d8bb121dbc8e2ec1a3623db9ebe0f94b234987c3a628" "fed662f44adde64b46005b1c2097f69ed51dda564bbbb2b05632903e051a99a8" @(
             "CMakeLists.txt",
             "README.md",
             "Source/DSP/GhostProcessor.cpp",
@@ -167,15 +167,18 @@ jobs:
             'statusLabel.setText ("v0.5.8  /  USER PRESETS"',
             "startupSizeTicks == 2",
             "startupSizeTicks == 9",
-            "slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 104, 22)",
-            "juce::Rectangle<int> (104, 88)",
+            "slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 94, 22)",
+            "juce::Rectangle<int> (94, 88)",
             "const std::array<int, 7> columns { 1, 3, 5, 5, 2, 3, 1 }",
+            "const int wReverb = bottomUsable * 49 / 100",
+            "const int wPhantom = bottomUsable * 22 / 100",
             "total = total.reduced (4.0f, 2.0f)",
             "diameter / 68.0f",
             "PHANTOM",
             "REVERB",
             "TONE",
             "SYNTH LAYER",
+            "LINK L/R",
             "LINK DOUBLE L/R",
             'deleteConfirmationEditor.getText().trim() == "delete"',
             "confirmDeleteButton.setEnabled (false)",
@@ -303,7 +306,7 @@ jobs:
           @(
             "Static v0.5.8 audit passed",
             "Seven cards; 38 unique one-page knobs",
-            "Knob components: 104 x 88 with scaled rendering",
+            "Knob components: 94 x 88 with non-overlapping multi-column hitboxes",
             "85 unique parameters; 84 legacy indices preserved; Reverb Low Cut appended",
             "Retired controls hidden and inactive in processBlock",
             "Preset deletion requires exact lowercase delete in editor and backend",
@@ -378,7 +381,7 @@ jobs:
             "Binary SHA-256: $binaryHash",
             "Startup/editor size: 1050 x 700 with delayed FL Studio reassertion",
             "Seven balanced cards and 38 unique one-page knobs",
-            "Knob component bounds: 104 x 88; rotary drawing scaled for about 30 percent more visible area",
+            "Knob component bounds: 94 x 88; visible rotary diameter is about 35 percent larger",
             "Five saved click-free effect-card bypass parameters; Input and Output remain active",
             "84 older parameter IDs preserved in exact order; Reverb Low Cut appended at index 84",
             "Input Trim, Bias, Instability, Wow, Tremolo, Formant and Resonance hidden and inactive",
@@ -404,7 +407,7 @@ jobs:
             "v0.5.8 INTERFACE",
             "- Opens at 1050 x 700 every time and remains resizable larger.",
             "- Seven cards use the page without the old empty gaps: Input, Compression, Drive, Reverb, Phantom, Tone and Output.",
-            "- All 38 knobs are visible together and use larger 104 x 88 components.",
+            "- All 38 knobs are visible together and use larger 94 x 88 non-overlapping components.",
             "- Phantom contains Ghost, Ghost Length, Double, Stereo Spread and Link Double L/R.",
             "- Select a USER preset, click DELETE, then type the exact lowercase word delete to enable final deletion.",
             "",
