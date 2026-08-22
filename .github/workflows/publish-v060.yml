@@ -1,3 +1,4 @@
+# Publishes only the immutable artifacts produced by the validated Windows run.
 name: Publish v0.6.0
 
 on:
