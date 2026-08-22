@@ -148,7 +148,7 @@ try {
     "outputLevelDb (1.0f - legacyMix)",
     "outputLevelDb (legacyMix)",
     "legacyThreshold - legacyMacro * 12.0f",
-    "confirmationText != \"delete\"",
+    'confirmationText != "delete"',
     "wetDc2X1",
     "12.0f / static_cast<float> (currentSampleRate)"
   ) "processor"
