@@ -1,7 +1,9 @@
 # Broken Machine
 
-Current Windows VST3 release: **v0.5.9**.
+Current Windows VST3 development release: **v0.6.0**.
 
-The verified source is reconstructed from the versioned payloads in `patches/` by the matching GitHub Actions workflow. The v0.5.9 source overlay preserves all 85 v0.5.8 host parameter indices and appends independent Dry and Wet parameters.
+The verified source is reconstructed from the versioned payloads in `patches/` by the matching GitHub Actions workflow. v0.6.0 preserves all 87 v0.5.9 host parameter indices exactly.
 
-Use `.github/workflows/build-v059.yml` to build, validate, and package the Windows x86-64 VST3. The workflow verifies the payload, parameter order, state migration, UI/DSP invariants, PE architecture, plugin metadata, and final install archive before publishing the artifact.
+Use `.github/workflows/build-v060.yml` to build, test, visually validate, and package the Windows x86-64 VST3. The workflow verifies the payload, parameter order, retired-DSP isolation, state migration, parallel-compression measurements/null, nine 1050 × 700 interface states, PE architecture, metadata, and final install archive.
+
+Research and the evidence-to-implementation audit are in [`docs/RESEARCH_AND_IMPLEMENTATION_v0.6.0.md`](docs/RESEARCH_AND_IMPLEMENTATION_v0.6.0.md).

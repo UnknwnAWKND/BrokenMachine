@@ -1,0 +1,350 @@
+name: Build Windows VST3 v0.6.0
+# Reconstruct the verified v0.5.9 baseline, apply v0.6.0, compile Windows x64,
+# run DSP/integration/visual validation, and publish only the tested install ZIP.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - v0.6.0
+    paths:
+      - "patches/v0.6.0-source-overlay.zip.b64"
+      - "scripts/validate-v060.ps1"
+      - "docs/RESEARCH_AND_IMPLEMENTATION_v0.6.0.md"
+      - "README.md"
+      - ".github/workflows/build-v060.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reconstruct verified v0.5.9 source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $yaml = Get-Content ".github/workflows/build-v059.yml" -Raw
+
+          function Invoke-RunStep([string]$Name, [string]$NextName, [string]$ScriptPath) {
+            $pattern = '(?ms)^      - name: ' + [regex]::Escape($Name) +
+              '\r?\n.*?^        run: \|\r?\n(?<script>.*?)(?=^      - name: ' +
+              [regex]::Escape($NextName) + ')'
+            $match = [regex]::Match($yaml, $pattern)
+            if (-not $match.Success) { throw "Could not extract workflow step '$Name'" }
+            $lines = $match.Groups['script'].Value -split "\r?\n"
+            $script = ($lines | ForEach-Object {
+              if ($_.StartsWith('          ')) { $_.Substring(10) } else { $_ }
+            }) -join [Environment]::NewLine
+            Set-Content $ScriptPath $script
+            & $ScriptPath
+          }
+
+          Invoke-RunStep "Reconstruct verified v0.5.8 source" "Install verified v0.5.9 overlay" ".\reconstruct-v059-base.ps1"
+          Invoke-RunStep "Install verified v0.5.9 overlay" "Static v0.5.9 parameter DSP UI and migration audit" ".\install-v059-overlay.ps1"
+
+      - name: Install verified v0.6.0 overlay
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $payload = "patches\v0.6.0-source-overlay.zip.b64"
+          $zipPath = "v0.6.0-source-overlay.zip"
+          $root = (Resolve-Path "source-root\BrokenMachine-v0.3").Path
+          $transport = (Get-Content $payload -Raw).Trim()
+          if ($transport.Length -ne 61920) { throw "v0.6.0 payload length $($transport.Length), expected 61920" }
+          $transportHash = ([BitConverter]::ToString(
+            [Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($transport))
+          )).Replace('-','').ToLowerInvariant()
+          if ($transportHash -ne "de6b63bdfcadd5759360c062fcc723f58f48319d8b8ac45998509a63bc37ab3b") {
+            throw "v0.6.0 transport hash mismatch: $transportHash"
+          }
+
+          [IO.File]::WriteAllBytes($zipPath, [Convert]::FromBase64String($transport))
+          $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($zipHash -ne "2b4d2c709a1f3c21d447d94d52bf1db32e1030c77b6534e0d4c380b629aa6166") {
+            throw "v0.6.0 source ZIP hash mismatch: $zipHash"
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath).Path)
+          try {
+            $entries = @($archive.Entries | Where-Object { $_.Name } |
+              ForEach-Object { $_.FullName.Replace('\','/') } | Sort-Object)
+          } finally {
+            $archive.Dispose()
+          }
+          $expected = @(
+            "CMakeLists.txt",
+            "README.md",
+            "Source/DSP/Compressor.cpp",
+            "Source/DSP/Compressor.h",
+            "Source/PluginEditor.cpp",
+            "Source/PluginEditor.h",
+            "Source/PluginProcessor.cpp",
+            "Source/UI/CustomLookAndFeel.cpp",
+            "Source/UI/CustomLookAndFeel.h",
+            "Source/UI/Meter.cpp",
+            "Source/UI/Meter.h",
+            "Tests/DspValidation.cpp",
+            "Tests/ProcessorValidation.cpp",
+            "Tests/VisualValidation.cpp"
+          ) | Sort-Object
+          if (($entries -join "`n") -ne ($expected -join "`n")) {
+            throw "Unexpected v0.6.0 archive paths: $($entries -join ', ')"
+          }
+          Expand-Archive $zipPath -DestinationPath $root -Force
+          Write-Host "v0.6.0 overlay verified: $($entries.Count) files; ZIP $zipHash"
+
+      - name: Static v0.6.0 compatibility DSP and UI audit
+        shell: pwsh
+        run: .\scripts\validate-v060.ps1 -SourceRoot .\source-root\BrokenMachine-v0.3
+
+      - name: Configure VS2022 x64
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build VST3 and validation tools
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: >-
+          cmake --build build --config Release --target
+          BrokenMachine_VST3
+          BrokenMachineDspValidation
+          BrokenMachineProcessorValidation
+          BrokenMachineVisualValidation
+          --parallel
+
+      - name: Run compiled DSP and processor validation
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force validation-output | Out-Null
+          $executables = Get-ChildItem build -Recurse -File -Filter "*.exe"
+          $dsp = $executables | Where-Object { $_.BaseName -match 'DSP.*Validation|DspValidation' } | Select-Object -First 1
+          $processor = $executables | Where-Object { $_.BaseName -match 'Processor.*Validation|ProcessorValidation' } | Select-Object -First 1
+          if (-not $dsp) { throw "DSP validation executable not found" }
+          if (-not $processor) { throw "Processor validation executable not found" }
+          & $dsp.FullName ((Resolve-Path validation-output).Path + "\ParallelCompressionMeasurements.csv")
+          if ($LASTEXITCODE -ne 0) { throw "DSP validation failed with exit code $LASTEXITCODE" }
+          & $processor.FullName ((Resolve-Path validation-output).Path + "\ProcessorValidation.csv")
+          if ($LASTEXITCODE -ne 0) { throw "Processor validation failed with exit code $LASTEXITCODE" }
+
+      - name: Render and verify visual states
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $executables = Get-ChildItem build -Recurse -File -Filter "*.exe"
+          $visual = $executables | Where-Object { $_.BaseName -match 'Visual.*Validation|VisualValidation' } | Select-Object -First 1
+          if (-not $visual) { throw "Visual validation executable not found" }
+          $output = (Resolve-Path validation-output).Path + "\visual"
+          New-Item -ItemType Directory -Force $output | Out-Null
+          & $visual.FullName $output
+          if ($LASTEXITCODE -ne 0) { throw "Visual validation failed with exit code $LASTEXITCODE" }
+
+          Add-Type -AssemblyName System.Drawing
+          $exact = @(
+            "01-vintage.png", "02-night.png", "03-preset-browser.png",
+            "04-user-selected-night.png", "05-card-bypass.png", "06-inactive-zeros.png",
+            "07-value-edit.png", "08-context-menu.png", "09-delete-confirmation.png"
+          )
+          $hashes = @()
+          foreach ($name in $exact) {
+            $file = Join-Path $output $name
+            if (-not (Test-Path $file)) { throw "Missing visual state $name" }
+            $bitmap = [Drawing.Bitmap]::FromFile($file)
+            try {
+              if ($bitmap.Width -ne 1050 -or $bitmap.Height -ne 700) {
+                throw "$name is $($bitmap.Width) x $($bitmap.Height), expected 1050 x 700"
+              }
+            } finally { $bitmap.Dispose() }
+            if ((Get-Item $file).Length -lt 10000) { throw "$name is implausibly small" }
+            $hashes += (Get-FileHash $file -Algorithm SHA256).Hash
+          }
+          if (($hashes | Sort-Object -Unique).Count -ne $exact.Count) {
+            throw "One or more exact-size visual states are identical"
+          }
+
+          $scaled = @{
+            "10-vintage-125-percent.png" = @(1313, 875)
+            "11-night-150-percent.png" = @(1575, 1050)
+          }
+          foreach ($entry in $scaled.GetEnumerator()) {
+            $file = Join-Path $output $entry.Key
+            if (-not (Test-Path $file)) { throw "Missing scale probe $($entry.Key)" }
+            $bitmap = [Drawing.Bitmap]::FromFile($file)
+            try {
+              if ($bitmap.Width -ne $entry.Value[0] -or $bitmap.Height -ne $entry.Value[1]) {
+                throw "$($entry.Key) is $($bitmap.Width) x $($bitmap.Height), expected $($entry.Value[0]) x $($entry.Value[1])"
+              }
+            } finally { $bitmap.Dispose() }
+          }
+          @(
+            "Broken Machine v0.6.0 visual validation",
+            "Nine unique exact-size 1050 x 700 states",
+            "Vintage and Night complete editor renders",
+            "Opaque browser and selected User preset",
+            "Whole-card bypass and ordinary inactive-zero states",
+            "Live value-edit state with no persistent readout boxes",
+            "Functional in-editor User context menu",
+            "Protected second-stage delete confirmation",
+            "125% and 150% raster-scale probes"
+          ) | Set-Content validation-output\VISUAL_VALIDATION.txt
+
+      - name: Validate and package v0.6.0 VST3
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vst3 = Get-ChildItem build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
+          if (-not $vst3) { throw "VST3 bundle not found" }
+          $binary = Get-ChildItem $vst3.FullName -Recurse -File |
+            Where-Object { $_.Name -eq "Broken Machine.vst3" -or $_.Extension -eq ".dll" } |
+            Select-Object -First 1
+          if (-not $binary) { throw "VST3 binary not found" }
+
+          $bytes = [IO.File]::ReadAllBytes($binary.FullName)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a -or [BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) {
+            throw "Binary is not PE32+ x86-64"
+          }
+          $versionInfo = (Get-Item $binary.FullName).VersionInfo
+          $version = if ($versionInfo.ProductVersion) { $versionInfo.ProductVersion } else { $versionInfo.FileVersion }
+          if (-not $version.StartsWith("0.6.0")) { throw "Unexpected binary version $version" }
+
+          $module = Get-ChildItem $vst3.FullName -Recurse -Filter moduleinfo.json | Select-Object -First 1
+          if (-not $module) { throw "moduleinfo.json not found" }
+          $moduleText = Get-Content $module.FullName -Raw
+          if (-not $moduleText.Contains('"Version": "0.6.0"') -or -not $moduleText.Contains("UnknwnAWKND")) {
+            throw "moduleinfo metadata mismatch"
+          }
+
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($marker in @(
+            "GetPluginFactory", "UnknwnAWKND", "PICK SENSITIVITY", "PARALLEL COMP",
+            "VINTAGE", "NIGHT", "DELETE USER PRESET", "TYPE delete TO CONFIRM",
+            "LINK L/R", "dryDb", "wetDb", "reverbLowCutHz"
+          )) {
+            if (-not $ascii.Contains($marker)) { throw "Missing binary marker '$marker'" }
+          }
+
+          $binaryHash = (Get-FileHash $binary.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "Broken Machine v0.6.0 binary validation",
+            "PE32+ x86-64",
+            "Version: $version",
+            "Vendor: UnknwnAWKND",
+            "Binary SHA-256: $binaryHash",
+            "87 v0.5.9 host parameter IDs and indices preserved",
+            "Vintage/Night editor-only theme; 1050 x 700 geometry",
+            "Seven-card mockup layout and 39 unique visible knobs",
+            "Opaque unified preset browser and protected User deletion",
+            "Retired parameters remain state-compatible but are DSP-inert",
+            "Parallel Compression exact-zero null and progressive density passed",
+            "Low/normal/hot transient, sustained, automation and state tests passed",
+            "Independent Dry/Wet and two-pole 12 Hz blocker preserved"
+          ) | Set-Content BINARY_VALIDATION.txt
+
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item $vst3.FullName "package\Broken Machine.vst3" -Recurse
+          @(
+            "BROKEN MACHINE v0.6.0 - WINDOWS x86-64 VST3",
+            "",
+            "INSTALL",
+            "1. Close FL Studio before replacing an existing Broken Machine build.",
+            '2. Extract this ZIP and copy the entire "Broken Machine.vst3" folder to your VST3 location.',
+            '   The common system location is C:\Program Files\Common Files\VST3.',
+            "3. Re-open FL Studio and rescan plugins if needed.",
+            "",
+            "v0.6.0",
+            "- Complete tactile seven-card interface at 1050 x 700.",
+            "- Vintage and Night themes share exact geometry; theme persists outside audio presets.",
+            "- PRESETS opens an opaque Factory/User browser. Right-click User items for protected deletion.",
+            "- Value readouts are plain text; inactive ordinary zeros are blank and Dry/Wet minima read OFF.",
+            "- Parallel Compression adds a phase-aligned dense branch and is exact-normal at zero.",
+            "- Existing 87 host parameters and their order remain compatible.",
+            "- Safe Out, independent Dry/Wet, low-cut protection and the two-pole 12 Hz blocker remain active."
+          ) | Set-Content "package\INSTALL.txt"
+          Copy-Item SOURCE_VALIDATION.txt "package\SOURCE_VALIDATION.txt"
+          Copy-Item BINARY_VALIDATION.txt "package\BINARY_VALIDATION.txt"
+          Copy-Item validation-output\ParallelCompressionMeasurements.csv "package\ParallelCompressionMeasurements.csv"
+          Copy-Item validation-output\ProcessorValidation.csv "package\ProcessorValidation.csv"
+          Copy-Item validation-output\VISUAL_VALIDATION.txt "package\VISUAL_VALIDATION.txt"
+          Copy-Item validation-output\visual "package\Visual Validation" -Recurse
+          Copy-Item README.md "package\README.md"
+          Copy-Item "$env:GITHUB_WORKSPACE\docs\RESEARCH_AND_IMPLEMENTATION_v0.6.0.md" "package\RESEARCH_AND_IMPLEMENTATION_v0.6.0.md"
+          Compress-Archive "package\*" "BrokenMachine-v0.6.0-Windows-VST3.zip" -Force
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $packageArchive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "BrokenMachine-v0.6.0-Windows-VST3.zip").Path)
+          try {
+            $compiledEntry = $packageArchive.Entries | Where-Object {
+              $_.FullName.Replace('\','/').Contains("Broken Machine.vst3/Contents/x86_64-win/") -and
+              ($_.Name -eq "Broken Machine.vst3" -or $_.Name.EndsWith(".dll"))
+            } | Select-Object -First 1
+            if (-not $compiledEntry -or $compiledEntry.Length -le 0) {
+              throw "Final install ZIP does not contain the compiled x86-64 VST3 binary"
+            }
+            foreach ($required in @("INSTALL.txt", "ParallelCompressionMeasurements.csv", "ProcessorValidation.csv", "01-vintage.png", "02-night.png")) {
+              if (-not ($packageArchive.Entries | Where-Object { $_.Name -eq $required })) {
+                throw "Final install ZIP is missing $required"
+              }
+            }
+          } finally {
+            $packageArchive.Dispose()
+          }
+          $packageHash = (Get-FileHash "BrokenMachine-v0.6.0-Windows-VST3.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "Install ZIP SHA-256: $packageHash" | Add-Content BINARY_VALIDATION.txt
+          Write-Host "Binary SHA-256: $binaryHash"
+          Write-Host "Install ZIP SHA-256: $packageHash"
+
+      - name: Create reconstructed source archive
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          New-Item -ItemType Directory -Force source-package | Out-Null
+          Copy-Item CMakeLists.txt,README.md "source-package\"
+          Copy-Item Source,Tests "source-package\" -Recurse
+          Compress-Archive "source-package\*" "BrokenMachine-v0.6.0-Reconstructed-Source.zip" -Force
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "BrokenMachine-v0.6.0-Reconstructed-Source.zip").Path)
+          try {
+            if (-not ($archive.Entries | Where-Object { $_.FullName.Replace('\','/') -eq "Source/PluginProcessor.cpp" })) {
+              throw "Source archive is incomplete"
+            }
+          } finally { $archive.Dispose() }
+
+      - name: Upload v0.6.0 plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.6.0-Windows-VST3
+          path: source-root/BrokenMachine-v0.3/BrokenMachine-v0.6.0-Windows-VST3.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload v0.6.0 validation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.6.0-Validation-Evidence
+          path: |
+            source-root/BrokenMachine-v0.3/SOURCE_VALIDATION.txt
+            source-root/BrokenMachine-v0.3/BINARY_VALIDATION.txt
+            source-root/BrokenMachine-v0.3/validation-output
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload reconstructed v0.6.0 source
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.6.0-Reconstructed-Source
+          path: source-root/BrokenMachine-v0.3/BrokenMachine-v0.6.0-Reconstructed-Source.zip
+          if-no-files-found: error
+          retention-days: 30
