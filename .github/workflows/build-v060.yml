@@ -56,17 +56,17 @@ jobs:
           $zipPath = "v0.6.0-source-overlay.zip"
           $root = (Resolve-Path "source-root\BrokenMachine-v0.3").Path
           $transport = (Get-Content $payload -Raw).Trim()
-          if ($transport.Length -ne 61920) { throw "v0.6.0 payload length $($transport.Length), expected 61920" }
+          if ($transport.Length -ne 61928) { throw "v0.6.0 payload length $($transport.Length), expected 61928" }
           $transportHash = ([BitConverter]::ToString(
             [Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($transport))
           )).Replace('-','').ToLowerInvariant()
-          if ($transportHash -ne "de6b63bdfcadd5759360c062fcc723f58f48319d8b8ac45998509a63bc37ab3b") {
+          if ($transportHash -ne "75f6efbdd55583a1d7776d152bf8a019aa7b62f939e2de27f592ce0901f7de2a") {
             throw "v0.6.0 transport hash mismatch: $transportHash"
           }
 
           [IO.File]::WriteAllBytes($zipPath, [Convert]::FromBase64String($transport))
           $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($zipHash -ne "2b4d2c709a1f3c21d447d94d52bf1db32e1030c77b6534e0d4c380b629aa6166") {
+          if ($zipHash -ne "351650b5851879eaedbb9ea4f7bb426216cf0b86153ffba07800088b573b70b7") {
             throw "v0.6.0 source ZIP hash mismatch: $zipHash"
           }
 
@@ -146,8 +146,11 @@ jobs:
           if (-not $visual) { throw "Visual validation executable not found" }
           $output = (Resolve-Path validation-output).Path + "\visual"
           New-Item -ItemType Directory -Force $output | Out-Null
-          & $visual.FullName $output
-          if ($LASTEXITCODE -ne 0) { throw "Visual validation failed with exit code $LASTEXITCODE" }
+          # This target is a Windows GUI subsystem executable. PowerShell's call operator does
+          # not wait for GUI applications, so use Start-Process to make rendering and exit status
+          # deterministic before opening the PNGs.
+          $visualProcess = Start-Process -FilePath $visual.FullName -ArgumentList @($output) -Wait -PassThru
+          if ($visualProcess.ExitCode -ne 0) { throw "Visual validation failed with exit code $($visualProcess.ExitCode)" }
 
           Add-Type -AssemblyName System.Drawing
           $exact = @(

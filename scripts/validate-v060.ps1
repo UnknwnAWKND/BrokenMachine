@@ -51,6 +51,7 @@ try {
     "presetBrowserTree.setOpaque (true)",
     "drawLabel (juce::Graphics& g, juce::Label& label)",
     "dynamic_cast<juce::Slider*>",
+    "slider.updateText()",
     "juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack",
     "juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack",
     "const int wInput = topUsable * 22 / 100",
