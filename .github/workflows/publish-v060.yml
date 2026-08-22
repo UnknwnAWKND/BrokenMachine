@@ -1,0 +1,161 @@
+name: Publish v0.6.0
+
+on:
+  push:
+    branches:
+      - v0.6.0
+    paths:
+      - .github/workflows/publish-v060.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-v0.6.0
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: UnknwnAWKND/BrokenMachine
+      TAG: v0.6.0
+      VALIDATED_RUN_ID: "32561835296"
+      VALIDATED_SHA: 5105b8c7e47b462a588006c1bb55ce7f030170d8
+      PLUGIN_ARTIFACT_ID: "9473135186"
+      VALIDATION_ARTIFACT_ID: "9473135464"
+      SOURCE_ARTIFACT_ID: "9473135694"
+
+    steps:
+      - name: Verify the validated workflow run
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_json="$(gh api "repos/${REPOSITORY}/actions/runs/${VALIDATED_RUN_ID}")"
+          test "$(jq -r '.status' <<<"${run_json}")" = completed
+          test "$(jq -r '.conclusion' <<<"${run_json}")" = success
+          test "$(jq -r '.head_sha' <<<"${run_json}")" = "${VALIDATED_SHA}"
+
+      - name: Download immutable CI artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          download_artifact() {
+            local artifact_id="$1"
+            local destination="$2"
+            curl --fail --silent --show-error --location \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header "Accept: application/vnd.github+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+              --output "${destination}"
+          }
+          download_artifact "${PLUGIN_ARTIFACT_ID}" artifacts/plugin-artifact.zip
+          download_artifact "${VALIDATION_ARTIFACT_ID}" artifacts/BrokenMachine-v0.6.0-Validation-Evidence.zip
+          download_artifact "${SOURCE_ARTIFACT_ID}" artifacts/source-artifact.zip
+
+      - name: Verify, normalize, and checksum release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "de6de51808946af1026faf8c590e61db737b16127c646e91ee01293839ff31bb  artifacts/plugin-artifact.zip" | sha256sum --check --strict
+          echo "e7c38688ac8538d88fd47e7d305902f88ce686079aa292156675b72a553f13b5  artifacts/BrokenMachine-v0.6.0-Validation-Evidence.zip" | sha256sum --check --strict
+          echo "c57e6a98dae2ec8e3c8593aad101cb939bd235f2a91c470aa57f5f095a2a871d  artifacts/source-artifact.zip" | sha256sum --check --strict
+
+          unzip -tq artifacts/plugin-artifact.zip
+          unzip -tq artifacts/BrokenMachine-v0.6.0-Validation-Evidence.zip
+          unzip -tq artifacts/source-artifact.zip
+          mkdir -p extracted/plugin extracted/source release
+          unzip -q artifacts/plugin-artifact.zip -d extracted/plugin
+          unzip -q artifacts/source-artifact.zip -d extracted/source
+          cp extracted/plugin/BrokenMachine-v0.6.0-Windows-VST3.zip release/
+          cp extracted/source/BrokenMachine-v0.6.0-Reconstructed-Source.zip release/
+          cp artifacts/BrokenMachine-v0.6.0-Validation-Evidence.zip release/
+
+          echo "a846a0bb0693f1b71232ccc4e715f8f34fdd6e582fe36f82181616d4ac034cfe  release/BrokenMachine-v0.6.0-Windows-VST3.zip" | sha256sum --check --strict
+          echo "0bc19e95754bc42c953d5e99abbb6a08c0ec9727ea02040a65ecce4da67576c5  release/BrokenMachine-v0.6.0-Reconstructed-Source.zip" | sha256sum --check --strict
+
+          unzip -tq release/BrokenMachine-v0.6.0-Windows-VST3.zip
+          unzip -tq release/BrokenMachine-v0.6.0-Reconstructed-Source.zip
+          unzip -l release/BrokenMachine-v0.6.0-Windows-VST3.zip | grep -F "Broken Machine.vst3/Contents/x86_64-win/Broken Machine.vst3"
+          unzip -l release/BrokenMachine-v0.6.0-Validation-Evidence.zip | grep -F "validation-output/visual/09-delete-confirmation.png"
+
+          (
+            cd release
+            sha256sum \
+              BrokenMachine-v0.6.0-Windows-VST3.zip \
+              BrokenMachine-v0.6.0-Reconstructed-Source.zip \
+              BrokenMachine-v0.6.0-Validation-Evidence.zip \
+              > SHA256SUMS.txt
+          )
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<'EOF'
+          BROKEN MACHINE v0.6.0 is the tested Windows x64 VST3 release built from commit `5105b8c7e47b462a588006c1bb55ce7f030170d8`.
+
+          Highlights:
+
+          - Rebuilt 1050 x 700 seven-card interface in Vintage and Night themes, with the requested mockup composition.
+          - Opaque Factory/User preset browser, previous/next navigation, and protected two-stage User preset deletion.
+          - Exact-zero Parallel Compression null with progressively denser low/medium/maximum settings.
+          - All 87 v0.5.9 host parameter IDs and indices preserved; retired controls remain state-compatible but DSP-inert.
+          - Independent Dry/Wet paths, Link L/R, Safe Out, low-cut protection, and the two-pole 12 Hz blocker preserved.
+
+          Validation:
+
+          - Windows build and all source, DSP, processor/state, preset, automation, and visual tests passed in [GitHub Actions run 32561835296](https://github.com/UnknwnAWKND/BrokenMachine/actions/runs/32561835296).
+          - The evidence archive includes nine exact 1050 x 700 editor states, 125% and 150% scaling probes, compiled measurements, and binary/source manifests.
+          - VST3 binary SHA-256: `4175f844223d33c6c10c05df48ca5e15c1f15814f14f0309cbf2bc47ab9b3f7f`.
+
+          Install: extract `BrokenMachine-v0.6.0-Windows-VST3.zip`, then copy the complete `Broken Machine.vst3` bundle into the Windows VST3 directory (normally `C:\Program Files\Common Files\VST3`).
+
+          The research report separates documented device behavior, direct artist statements, secondary reporting, and implementation inference. Exact private signal-chain settings remain intentionally unclaimed.
+          EOF
+
+      - name: Publish the tested commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            release/BrokenMachine-v0.6.0-Windows-VST3.zip
+            release/BrokenMachine-v0.6.0-Reconstructed-Source.zip
+            release/BrokenMachine-v0.6.0-Validation-Evidence.zip
+            release/SHA256SUMS.txt
+          )
+
+          if gh release view "${TAG}" --repo "${REPOSITORY}" >/dev/null 2>&1; then
+            tag_sha="$(gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha')"
+            test "${tag_sha}" = "${VALIDATED_SHA}"
+            gh release edit "${TAG}" \
+              --repo "${REPOSITORY}" \
+              --title "BROKEN MACHINE v0.6.0" \
+              --notes-file release-notes.md
+            gh release upload "${TAG}" "${assets[@]}" --repo "${REPOSITORY}" --clobber
+          else
+            gh release create "${TAG}" "${assets[@]}" \
+              --repo "${REPOSITORY}" \
+              --target "${VALIDATED_SHA}" \
+              --title "BROKEN MACHINE v0.6.0" \
+              --notes-file release-notes.md
+          fi
+
+      - name: Verify public release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${TAG}")"
+          test "$(jq -r '.draft' <<<"${release_json}")" = false
+          test "$(jq -r '.prerelease' <<<"${release_json}")" = false
+          for asset in \
+            BrokenMachine-v0.6.0-Windows-VST3.zip \
+            BrokenMachine-v0.6.0-Reconstructed-Source.zip \
+            BrokenMachine-v0.6.0-Validation-Evidence.zip \
+            SHA256SUMS.txt; do
+            jq -e --arg asset "${asset}" '.assets[] | select(.name == $asset and .state == "uploaded" and .size > 0)' <<<"${release_json}" >/dev/null
+          done
