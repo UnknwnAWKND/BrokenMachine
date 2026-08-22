@@ -1,4 +1,5 @@
 name: Build Windows VST3 v0.5.9
+# Reconstruct v0.5.8, apply the verified v0.5.9 source overlay, then publish only a validated VST3.
 
 on:
   workflow_dispatch:
