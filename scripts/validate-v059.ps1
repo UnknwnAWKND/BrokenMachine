@@ -53,7 +53,6 @@ try {
     "showOkCancelBox",
     '"YES", "NO"',
     'confirmation != "delete"',
-    'confirmationText != "delete"',
     "TooltipWindow",
     "updateHelpTooltips",
     "Sound:",
