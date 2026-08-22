@@ -1,0 +1,436 @@
+name: Build Windows VST3 v0.5.8
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - v0.5.8
+    paths:
+      - "patches/v0.5.8-source-overlay.zip.b64"
+      - ".github/workflows/build-v058.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reconstruct verified v0.5.2 source base
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $yaml = Get-Content ".github/workflows/build-v05-hotfix.yml" -Raw
+          $m = [regex]::Match($yaml, '(?ms)^      - name: Reconstruct v0\.5\.1 and apply verified v0\.5\.2\r?\n.*?^        run: \|\r?\n(?<script>.*?)(?=^      - name: Static UI and compatibility audit)')
+          if (-not $m.Success) { throw "Could not extract verified v0.5.2 base reconstruction step" }
+          $lines = $m.Groups['script'].Value -split "\r?\n"
+          $script = ($lines | ForEach-Object { if ($_.StartsWith('          ')) { $_.Substring(10) } else { $_ } }) -join [Environment]::NewLine
+          Set-Content reconstruct-v052.ps1 $script
+          & ./reconstruct-v052.ps1
+          if ($LASTEXITCODE -ne 0) { throw "v0.5.2 base reconstruction failed: $LASTEXITCODE" }
+
+      - name: Install verified v0.5.5 through v0.5.8 overlays
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = (Resolve-Path "source-root\BrokenMachine-v0.3").Path
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          function Install-Overlay(
+            [string]$Version,
+            [int]$ExpectedLength,
+            [string]$ExpectedTransportHash,
+            [string]$ExpectedZipHash,
+            [string[]]$Allowed
+          ) {
+            $payload = "patches\$Version-source-overlay.zip.b64"
+            $zipPath = "$Version-source-overlay.zip"
+            $transport = (Get-Content $payload -Raw).Trim()
+            if ($transport.Length -ne $ExpectedLength) {
+              throw "$Version payload length $($transport.Length), expected $ExpectedLength"
+            }
+            $transportHash = ([BitConverter]::ToString(
+              [Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($transport))
+            )).Replace('-','').ToLowerInvariant()
+            if ($transportHash -ne $ExpectedTransportHash) {
+              throw "$Version transport hash mismatch: $transportHash"
+            }
+
+            [IO.File]::WriteAllBytes($zipPath, [Convert]::FromBase64String($transport))
+            $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($zipHash -ne $ExpectedZipHash) {
+              throw "$Version source ZIP hash mismatch: $zipHash"
+            }
+
+            $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath).Path)
+            try {
+              $entries = @($zip.Entries | Where-Object { $_.Name } |
+                ForEach-Object { $_.FullName.Replace('\','/') } | Sort-Object)
+            } finally {
+              $zip.Dispose()
+            }
+            $expected = @($Allowed | Sort-Object)
+            if (($entries -join [Environment]::NewLine) -ne ($expected -join [Environment]::NewLine)) {
+              throw "Unexpected $Version archive paths: $($entries -join ', ')"
+            }
+
+            Expand-Archive $zipPath -DestinationPath $root -Force
+            Write-Host "$Version overlay verified: $($entries.Count) files; ZIP $zipHash"
+          }
+
+          Install-Overlay "v0.5.5" 40428 "08f9f3eac1aec4bc99d240886d6b0e34a17cb658694a800ebe729e2a451f654a" "31e3101ecda3e8edf8c1778afd232df48f7a6dac90709797bdb3461d10aeeb8f" @(
+            "CMakeLists.txt",
+            "Source/Parameters/Parameters.cpp",
+            "Source/Parameters/Parameters.h",
+            "Source/PluginEditor.cpp",
+            "Source/PluginEditor.h",
+            "Source/PluginProcessor.cpp",
+            "Source/PluginProcessor.h",
+            "Source/UI/CustomLookAndFeel.cpp",
+            "Source/UI/CustomLookAndFeel.h"
+          )
+
+          Install-Overlay "v0.5.6" 54088 "163682a91ad8eabc022a9f9d08fe39497c2812531fe0d8652f3435bf5fd5fa52" "3c339fa29f25346534f4a96f5ce9725d457c3a80a074fd2757463e5a41975a64" @(
+            "CMakeLists.txt",
+            "README.md",
+            "Source/DSP/GhostProcessor.cpp",
+            "Source/DSP/Saturator.cpp",
+            "Source/DSP/Saturator.h",
+            "Source/DSP/SpatialProcessor.cpp",
+            "Source/DSP/SpatialProcessor.h",
+            "Source/DSP/Tremolo.cpp",
+            "Source/DSP/Tremolo.h",
+            "Source/DSP/WowFlutter.cpp",
+            "Source/DSP/WowFlutter.h",
+            "Source/Parameters/Parameters.cpp",
+            "Source/Parameters/Parameters.h",
+            "Source/PluginEditor.cpp",
+            "Source/PluginEditor.h",
+            "Source/PluginProcessor.cpp",
+            "Source/PluginProcessor.h"
+          )
+
+          Install-Overlay "v0.5.7" 33796 "ea59c65f6fc80c05db39130e313f7cca8c5736ba16d7b9efd2925218e75d4e5f" "68cb41d2f039180aae8acf53136c1b114ae3c125f3625da69f5bbc0cd3de5353" @(
+            "CMakeLists.txt",
+            "README.md",
+            "Source/PluginEditor.cpp",
+            "Source/PluginEditor.h",
+            "Source/PluginProcessor.cpp",
+            "Source/PluginProcessor.h"
+          )
+
+          Install-Overlay "v0.5.8" 64924 "cbb853584691228b49d0542ef78e9fdc827245895069f222596349e0e4e17169" "974fe31c4004c6e493734db9cda5b66de21f62932d644cb72500944610e572bc" @(
+            "CMakeLists.txt",
+            "README.md",
+            "Source/DSP/GhostProcessor.cpp",
+            "Source/DSP/GhostProcessor.h",
+            "Source/DSP/MicroDouble.cpp",
+            "Source/DSP/MicroDouble.h",
+            "Source/DSP/ModelerProcessor.cpp",
+            "Source/DSP/Saturator.cpp",
+            "Source/DSP/Saturator.h",
+            "Source/DSP/SpatialProcessor.cpp",
+            "Source/DSP/SpatialProcessor.h",
+            "Source/DSP/ToneEngine.cpp",
+            "Source/DSP/ToneEngine.h",
+            "Source/Parameters/Parameters.cpp",
+            "Source/Parameters/Parameters.h",
+            "Source/PluginEditor.cpp",
+            "Source/PluginEditor.h",
+            "Source/PluginProcessor.cpp",
+            "Source/PluginProcessor.h",
+            "Source/UI/CustomLookAndFeel.cpp"
+          )
+
+      - name: Static v0.5.8 layout DSP and compatibility audit
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cmake = Get-Content "CMakeLists.txt" -Raw
+          if (-not $cmake.Contains("VERSION 0.5.8")) { throw "CMake version is not 0.5.8" }
+          if (-not $cmake.Contains('COMPANY_NAME "UnknwnAWKND"')) { throw "Vendor metadata changed" }
+          foreach ($removedSource in @("Source/DSP/WowFlutter.cpp", "Source/DSP/Tremolo.cpp", "Source/DSP/FeedbackResonator.cpp")) {
+            if ($cmake.Contains($removedSource)) { throw "Retired DSP source is still compiled: $removedSource" }
+          }
+
+          $editor = Get-Content "Source\PluginEditor.cpp" -Raw
+          $header = Get-Content "Source\PluginEditor.h" -Raw
+          $laf = Get-Content "Source\UI\CustomLookAndFeel.cpp" -Raw
+          $allUi = $editor + [Environment]::NewLine + $header + [Environment]::NewLine + $laf
+          foreach ($marker in @(
+            "setResizeLimits (1050, 700, 1700, 1150)",
+            "setSize (1050, 700)",
+            'statusLabel.setText ("v0.5.8  /  USER PRESETS"',
+            "startupSizeTicks == 2",
+            "startupSizeTicks == 9",
+            "slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 104, 22)",
+            "juce::Rectangle<int> (104, 88)",
+            "const std::array<int, 7> columns { 1, 3, 5, 5, 2, 3, 1 }",
+            "total = total.reduced (4.0f, 2.0f)",
+            "diameter / 68.0f",
+            "PHANTOM",
+            "REVERB",
+            "TONE",
+            "SYNTH LAYER",
+            "LINK DOUBLE L/R",
+            'deleteConfirmationEditor.getText().trim() == "delete"',
+            "confirmDeleteButton.setEnabled (false)",
+            "DELETE USER PRESET"
+          )) {
+            if (-not $allUi.Contains($marker)) { throw "Missing v0.5.8 UI marker '$marker'" }
+          }
+
+          $bindings = @([regex]::Matches($editor, 'addModuleKnob \([^\r\n]+Params::ID::(\w+)') |
+            ForEach-Object { $_.Groups[1].Value })
+          if ($bindings.Count -ne 38) { throw "Expected 38 one-page knob bindings, found $($bindings.Count)" }
+          if (($bindings | Sort-Object -Unique).Count -ne 38) { throw "One-page knob bindings contain duplicates" }
+          $moduleCounts = @{
+            inputModule = 2
+            compressionModule = 6
+            driveModule = 9
+            reverbModule = 9
+            phantomModule = 4
+            toneModule = 6
+            outputModule = 2
+          }
+          foreach ($name in $moduleCounts.Keys) {
+            $count = [regex]::Matches($editor, "addModuleKnob \($name,").Count
+            if ($count -ne $moduleCounts[$name]) {
+              throw "$name has $count controls, expected $($moduleCounts[$name])"
+            }
+          }
+          foreach ($retired in @(
+            "punch", "bloom", "brightness", "highBreakup", "flutter", "drift", "damage",
+            "detuneCents", "offsetMs", "bodyFreqHz", "biteFreqHz", "feedbackRes",
+            "feedbackFreqHz", "feedbackHold", "darkness", "portaTrim", "bias", "weird",
+            "wow", "tremoloDepth", "tremoloRateHz", "formant", "resonance"
+          )) {
+            if ($bindings -contains $retired) { throw "Retired knob remains visible: $retired" }
+          }
+
+          $paramsHeader = Get-Content "Source\Parameters\Parameters.h" -Raw
+          $params = Get-Content "Source\Parameters\Parameters.cpp" -Raw
+          $ids = @([regex]::Matches($paramsHeader, 'inline constexpr auto\s+(\w+)\s*=') |
+            ForEach-Object { $_.Groups[1].Value })
+          if ($ids.Count -ne 85 -or ($ids | Sort-Object -Unique).Count -ne 85) {
+            throw "Expected 85 unique declared parameter IDs"
+          }
+          $layoutIds = @([regex]::Matches($params, '(?:fparam|cparam) \(ID::(\w+)|ParameterID \{ ID::(\w+), 1 \}') |
+            ForEach-Object {
+              if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value }
+            })
+          if ($layoutIds.Count -ne 85 -or ($layoutIds | Sort-Object -Unique).Count -ne 85) {
+            throw "Expected 85 unique layout parameters"
+          }
+          $expectedLegacy = "inputDb,diCharacter,inputProfile,topology,compress,punch,crush,threshold,ratio,attackMs,releaseMs,makeupDb,kneeDb,transientSense,sustainSense,drive,bias,texture,sag,portaTrim,portaChannel,portaMaster,portaBassDb,portaTrebleDb,lowTight,highBreakup,wow,flutter,drift,damage,doubleMix,detuneCents,offsetMs,spread,driftLink,lowCutHz,highCutHz,body,bodyFreqHz,bite,biteFreqHz,resonance,formant,speaker,size,space,slapMs,feedback,width,darkness,smear,reverbDrive,reverbGate,reverbDuck,wetCompress,wetTone,wetBias,ghost,ghostSizeMs,modelMix,modelColor,modelMotion,feedbackRes,feedbackFreqHz,feedbackHold,react,broken,brightness,bloom,weird,mix,outputDb,autoGain,safe,compressionEnabled,driveEnabled,reverbEnabled,pitchEnabled,toneEnabled"
+          if (($layoutIds[0..78] -join ",") -ne $expectedLegacy) { throw "Legacy parameter order changed" }
+          if (($layoutIds[79..83] -join ",") -ne "highProtect,reverbHighCutHz,tremoloDepth,tremoloRateHz,modelEnabled") {
+            throw "v0.5.6 parameter order changed"
+          }
+          if ($layoutIds[84] -ne "reverbLowCutHz") { throw "Reverb Low Cut was not appended at index 84" }
+
+          $processor = Get-Content "Source\PluginProcessor.cpp" -Raw
+          $processorHeader = Get-Content "Source\PluginProcessor.h" -Raw
+          $processMatch = [regex]::Match($processor, '(?s)void BrokenMachineAudioProcessor::processBlock.*?(?=void BrokenMachineAudioProcessor::getStateInformation)')
+          if (-not $processMatch.Success) { throw "Could not isolate processBlock" }
+          $process = $processMatch.Value
+          foreach ($retired in @(
+            "punch", "bloom", "brightness", "highBreakup", "flutter", "drift", "damage",
+            "detuneCents", "offsetMs", "bodyFreqHz", "biteFreqHz", "feedbackRes",
+            "feedbackFreqHz", "feedbackHold", "darkness", "portaTrim", "bias", "weird",
+            "wow", "tremoloDepth", "tremoloRateHz", "formant", "resonance", "modelEnabled"
+          )) {
+            if ([regex]::IsMatch($process, "(?:value|boolValue|choiceValue) \(Params::ID::$retired\)")) {
+              throw "Retired parameter still drives processBlock: $retired"
+            }
+          }
+          foreach ($marker in @(
+            "Params::ID::reverbLowCutHz",
+            "phantomMix",
+            "distortionMix",
+            "wetDc2X1",
+            "12.0f / static_cast<float> (currentSampleRate)",
+            "stateContainsParameter",
+            "saveUserPreset",
+            "loadUserPreset",
+            "deleteUserPreset",
+            "Phantom Clean"
+          )) {
+            if (-not (($processor + [Environment]::NewLine + $processorHeader).Contains($marker))) {
+              throw "Missing processor marker '$marker'"
+            }
+          }
+          if ([regex]::Matches($editor, 'Params::ID::(?:compression|drive|reverb|pitch|tone)Enabled').Count -ne 5) {
+            throw "Expected five effect-card bypass attachments"
+          }
+          foreach ($marker in @(
+            'confirmationText.trim() != "delete"',
+            "file.deleteFile()",
+            "matchesPresetName",
+            "deletePresetButton.setEnabled (hasSelection)"
+          )) {
+            if (-not (($processor + [Environment]::NewLine + $editor).Contains($marker))) {
+              throw "Missing protected preset-delete marker '$marker'"
+            }
+          }
+
+          $sat = Get-Content "Source\DSP\Saturator.cpp" -Raw
+          $ghost = Get-Content "Source\DSP\GhostProcessor.cpp" -Raw
+          $spatial = Get-Content "Source\DSP\SpatialProcessor.cpp" -Raw
+          $modeler = Get-Content "Source\DSP\ModelerProcessor.cpp" -Raw
+          $tone = Get-Content "Source\DSP\ToneEngine.cpp" -Raw
+          foreach ($check in @(
+            @{ Text = $sat; Marker = "distortionDrive" },
+            @{ Text = $sat; Marker = "distortionMix" },
+            @{ Text = $sat; Marker = "0.018f" },
+            @{ Text = $sat; Marker = "0.320f" },
+            @{ Text = $sat; Marker = "sagAmount * sag * 10.0f" },
+            @{ Text = $sat; Marker = "lowExtension" },
+            @{ Text = $sat; Marker = "highExtension" },
+            @{ Text = $ghost; Marker = "s.lowCutHz" },
+            @{ Text = $ghost; Marker = "hp2Y1" },
+            @{ Text = $spatial; Marker = "s.lowCutHz" },
+            @{ Text = $spatial; Marker = "hp2Y1" },
+            @{ Text = $modeler; Marker = "std::copysign (std::sqrt (std::abs (st.lp)), st.lp)" },
+            @{ Text = $tone; Marker = "constexpr float q = 0.90f" }
+          )) {
+            if (-not $check.Text.Contains($check.Marker)) { throw "Missing DSP marker '$($check.Marker)'" }
+          }
+
+          @(
+            "Static v0.5.8 audit passed",
+            "Seven cards; 38 unique one-page knobs",
+            "Knob components: 104 x 88 with scaled rendering",
+            "85 unique parameters; 84 legacy indices preserved; Reverb Low Cut appended",
+            "Retired controls hidden and inactive in processBlock",
+            "Preset deletion requires exact lowercase delete in editor and backend",
+            "Distinct Preamp Drive and Distortion paths; extended Sag/protection",
+            "Independent two-pole Reverb/Ghost Low Cut",
+            "Two-pole 12 Hz always-on processed-path blocker"
+          ) | Set-Content SOURCE_VALIDATION.txt
+          Get-Content SOURCE_VALIDATION.txt
+
+      - name: Configure VS2022 x64
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build VST3 Release
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake --build build --config Release --target BrokenMachine_VST3 --parallel
+
+      - name: Validate and package v0.5.8 VST3
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vst3 = Get-ChildItem build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
+          if (-not $vst3) { throw "VST3 bundle not found" }
+          $binary = Get-ChildItem $vst3.FullName -Recurse -File |
+            Where-Object { $_.Name -eq "Broken Machine.vst3" -or $_.Extension -eq ".dll" } |
+            Select-Object -First 1
+          if (-not $binary) { throw "VST3 binary not found" }
+
+          $bytes = [IO.File]::ReadAllBytes($binary.FullName)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a -or [BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) {
+            throw "Binary is not PE32+ x86-64"
+          }
+          $vi = (Get-Item $binary.FullName).VersionInfo
+          $version = if ($vi.ProductVersion) { $vi.ProductVersion } else { $vi.FileVersion }
+          if (-not $version.StartsWith("0.5.8")) { throw "Unexpected binary version $version" }
+
+          $module = Get-ChildItem $vst3.FullName -Recurse -Filter moduleinfo.json | Select-Object -First 1
+          if (-not $module) { throw "moduleinfo.json not found" }
+          $moduleText = Get-Content $module.FullName -Raw
+          if (-not $moduleText.Contains('"Version": "0.5.8"') -or -not $moduleText.Contains("UnknwnAWKND")) {
+            throw "moduleinfo metadata mismatch"
+          }
+
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($marker in @(
+            "GetPluginFactory",
+            "InitDll",
+            "ExitDll",
+            "UnknwnAWKND",
+            "DYNAMIC FX SENSITIVITY",
+            "SYNTH LAYER",
+            "PHANTOM",
+            "REVERB DRIVE",
+            "reverbLowCutHz",
+            "highProtect",
+            "DELETE PRESET",
+            "TYPE delete TO"
+          )) {
+            if (-not $ascii.Contains($marker)) { throw "Missing binary marker '$marker'" }
+          }
+
+          $binaryHash = (Get-FileHash $binary.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "Broken Machine v0.5.8 validation",
+            "PE32+ x86-64",
+            "Version: $version",
+            "Vendor: UnknwnAWKND",
+            "Binary SHA-256: $binaryHash",
+            "Startup/editor size: 1050 x 700 with delayed FL Studio reassertion",
+            "Seven balanced cards and 38 unique one-page knobs",
+            "Knob component bounds: 104 x 88; rotary drawing scaled for about 30 percent more visible area",
+            "Five saved click-free effect-card bypass parameters; Input and Output remain active",
+            "84 older parameter IDs preserved in exact order; Reverb Low Cut appended at index 84",
+            "Input Trim, Bias, Instability, Wow, Tremolo, Formant and Resonance hidden and inactive",
+            "Preamp Drive and Distortion use separate nonlinear paths",
+            "Sag uses slower attack, longer recovery and deeper supply-style headroom collapse",
+            "Drive Low/High Cut protection has extended upper-range effectiveness",
+            "Reverb/Ghost Low Cut: 20 to 1000 Hz with two cascaded poles",
+            "Processed path has an always-on two-pole 12 Hz subsonic blocker",
+            "Selected user presets require exact lowercase delete confirmation in editor and backend"
+          ) | Set-Content BINARY_VALIDATION.txt
+
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item $vst3.FullName "package\Broken Machine.vst3" -Recurse
+          @(
+            "BROKEN MACHINE v0.5.8 - WINDOWS / FL STUDIO",
+            "",
+            "INSTALL",
+            "1. Close FL Studio before replacing an existing Broken Machine build.",
+            '2. Extract this ZIP and copy the entire "Broken Machine.vst3" folder to your VST3 location.',
+            '   The common system location is C:\Program Files\Common Files\VST3.',
+            "3. Re-open FL Studio and rescan plugins if needed.",
+            "",
+            "v0.5.8 INTERFACE",
+            "- Opens at 1050 x 700 every time and remains resizable larger.",
+            "- Seven cards use the page without the old empty gaps: Input, Compression, Drive, Reverb, Phantom, Tone and Output.",
+            "- All 38 knobs are visible together and use larger 104 x 88 components.",
+            "- Phantom contains Ghost, Ghost Length, Double, Stereo Spread and Link Double L/R.",
+            "- Select a USER preset, click DELETE, then type the exact lowercase word delete to enable final deletion.",
+            "",
+            "AUDIO CHANGES",
+            "- Preamp Drive is warm staged saturation; Distortion blends a separate harder post-preamp clip path.",
+            "- Sag now uses a slower and deeper supply-style response intended to be clearly audible on sustained playing.",
+            "- Drive Low Cut and High Cut retain their earlier lower ranges and become much stronger near maximum.",
+            "- Reverb has an independent 20 to 1000 Hz Low Cut that also filters the Ghost wet signal.",
+            "- An always-on processed-path subsonic blocker prevents near-DC buildup when Tone is bypassed.",
+            "- Input Trim, Bias, Instability, Wow, Tremolo, Formant and Resonance no longer control the audio path.",
+            "",
+            "COMPATIBILITY",
+            "All 84 v0.5.7 parameter IDs remain at their exact host indices.",
+            "Reverb Low Cut is appended as parameter 85. Retired IDs remain loadable for older projects."
+          ) | Set-Content package\INSTALL.txt
+          Copy-Item SOURCE_VALIDATION.txt package\SOURCE_VALIDATION.txt
+          Copy-Item BINARY_VALIDATION.txt package\BINARY_VALIDATION.txt
+          Copy-Item README.md package\README.md
+          Compress-Archive "package\*" "BrokenMachine-v0.5.8-Windows-VST3.zip" -Force
+          Write-Host "Binary SHA-256: $binaryHash"
+
+      - name: Upload v0.5.8 plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.5.8-Windows-VST3
+          path: source-root/BrokenMachine-v0.3/BrokenMachine-v0.5.8-Windows-VST3.zip
+          if-no-files-found: error
+          retention-days: 30
