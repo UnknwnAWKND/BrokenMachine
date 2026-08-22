@@ -251,7 +251,6 @@ jobs:
           foreach ($marker in @(
             "Params::ID::reverbLowCutHz",
             "phantomMix",
-            "distortionMix",
             "wetDc2X1",
             "12.0f / static_cast<float> (currentSampleRate)",
             "stateContainsParameter",
