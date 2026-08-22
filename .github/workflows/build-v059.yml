@@ -1,0 +1,232 @@
+name: Build Windows VST3 v0.5.9
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - v0.5.9
+    paths:
+      - "patches/v0.5.9-source-overlay.zip.b64"
+      - "scripts/validate-v059.ps1"
+      - ".github/workflows/build-v059.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reconstruct verified v0.5.8 source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $yaml = Get-Content ".github/workflows/build-v058.yml" -Raw
+
+          function Invoke-RunStep([string]$Name, [string]$NextName, [string]$ScriptPath) {
+            $pattern = '(?ms)^      - name: ' + [regex]::Escape($Name) +
+              '\r?\n.*?^        run: \|\r?\n(?<script>.*?)(?=^      - name: ' +
+              [regex]::Escape($NextName) + ')'
+            $match = [regex]::Match($yaml, $pattern)
+            if (-not $match.Success) { throw "Could not extract workflow step '$Name'" }
+            $lines = $match.Groups['script'].Value -split "\r?\n"
+            $script = ($lines | ForEach-Object {
+              if ($_.StartsWith('          ')) { $_.Substring(10) } else { $_ }
+            }) -join [Environment]::NewLine
+            Set-Content $ScriptPath $script
+            & $ScriptPath
+          }
+
+          Invoke-RunStep "Reconstruct verified v0.5.2 source base" "Install verified v0.5.5 through v0.5.8 overlays" ".\reconstruct-v058-base.ps1"
+          Invoke-RunStep "Install verified v0.5.5 through v0.5.8 overlays" "Static v0.5.8 layout DSP and compatibility audit" ".\install-v058-overlays.ps1"
+
+      - name: Install verified v0.5.9 overlay
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $payload = "patches\v0.5.9-source-overlay.zip.b64"
+          $zipPath = "v0.5.9-source-overlay.zip"
+          $root = (Resolve-Path "source-root\BrokenMachine-v0.3").Path
+          $transport = (Get-Content $payload -Raw).Trim()
+          if ($transport.Length -ne 55200) { throw "v0.5.9 payload length $($transport.Length), expected 55200" }
+          $transportHash = ([BitConverter]::ToString(
+            [Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($transport))
+          )).Replace('-','').ToLowerInvariant()
+          if ($transportHash -ne "6a953217d1e47928c7d8f4a231dd3594e84c705cc2f741180c4c620393132adb") {
+            throw "v0.5.9 transport hash mismatch: $transportHash"
+          }
+
+          [IO.File]::WriteAllBytes($zipPath, [Convert]::FromBase64String($transport))
+          $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($zipHash -ne "68c112d04139eb44f8fe3572c9bb747d7becbe2547abd4c94e552c14f7c41e15") {
+            throw "v0.5.9 source ZIP hash mismatch: $zipHash"
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath).Path)
+          try {
+            $entries = @($archive.Entries | Where-Object { $_.Name } |
+              ForEach-Object { $_.FullName.Replace('\','/') } | Sort-Object)
+          } finally {
+            $archive.Dispose()
+          }
+          $expected = @(
+            "CMakeLists.txt",
+            "README.md",
+            "Source/DSP/Compressor.cpp",
+            "Source/DSP/Compressor.h",
+            "Source/DSP/Saturator.cpp",
+            "Source/DSP/Saturator.h",
+            "Source/Parameters/Parameters.cpp",
+            "Source/Parameters/Parameters.h",
+            "Source/PluginEditor.cpp",
+            "Source/PluginEditor.h",
+            "Source/PluginProcessor.cpp",
+            "Source/PluginProcessor.h",
+            "Source/UI/CustomLookAndFeel.cpp",
+            "Source/UI/Meter.cpp"
+          ) | Sort-Object
+          if (($entries -join "`n") -ne ($expected -join "`n")) {
+            throw "Unexpected v0.5.9 archive paths: $($entries -join ', ')"
+          }
+          Expand-Archive $zipPath -DestinationPath $root -Force
+          Write-Host "v0.5.9 overlay verified: $($entries.Count) files; ZIP $zipHash"
+
+      - name: Static v0.5.9 parameter DSP UI and migration audit
+        shell: pwsh
+        run: .\scripts\validate-v059.ps1 -SourceRoot .\source-root\BrokenMachine-v0.3
+
+      - name: Configure VS2022 x64
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build VST3 Release
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: cmake --build build --config Release --target BrokenMachine_VST3 --parallel
+
+      - name: Validate and package v0.5.9 VST3
+        shell: pwsh
+        working-directory: source-root/BrokenMachine-v0.3
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vst3 = Get-ChildItem build -Recurse -Directory -Filter "Broken Machine.vst3" | Select-Object -First 1
+          if (-not $vst3) { throw "VST3 bundle not found" }
+          $binary = Get-ChildItem $vst3.FullName -Recurse -File |
+            Where-Object { $_.Name -eq "Broken Machine.vst3" -or $_.Extension -eq ".dll" } |
+            Select-Object -First 1
+          if (-not $binary) { throw "VST3 binary not found" }
+
+          $bytes = [IO.File]::ReadAllBytes($binary.FullName)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a -or [BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) {
+            throw "Binary is not PE32+ x86-64"
+          }
+          $versionInfo = (Get-Item $binary.FullName).VersionInfo
+          $version = if ($versionInfo.ProductVersion) { $versionInfo.ProductVersion } else { $versionInfo.FileVersion }
+          if (-not $version.StartsWith("0.5.9")) { throw "Unexpected binary version $version" }
+
+          $module = Get-ChildItem $vst3.FullName -Recurse -Filter moduleinfo.json | Select-Object -First 1
+          if (-not $module) { throw "moduleinfo.json not found" }
+          $moduleText = Get-Content $module.FullName -Raw
+          if (-not $moduleText.Contains('"Version": "0.5.9"') -or -not $moduleText.Contains("UnknwnAWKND")) {
+            throw "moduleinfo metadata mismatch"
+          }
+
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($marker in @(
+            "GetPluginFactory",
+            "UnknwnAWKND",
+            "PICK SENSITIVITY",
+            "PARALLEL COMP",
+            "SYNTH LAYER",
+            "PRESETS",
+            "TYPE delete TO",
+            "HELP",
+            "dryDb",
+            "wetDb",
+            "reverbLowCutHz"
+          )) {
+            if (-not $ascii.Contains($marker)) { throw "Missing binary marker '$marker'" }
+          }
+
+          $binaryHash = (Get-FileHash $binary.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "Broken Machine v0.5.9 validation",
+            "PE32+ x86-64",
+            "Version: $version",
+            "Vendor: UnknwnAWKND",
+            "Binary SHA-256: $binaryHash",
+            "Startup/editor size: 1050 x 700 with delayed FL Studio reassertion",
+            "Seven cards and 39 unique one-page knobs",
+            "Drive and Reverb: true 3 x 3; Compression: two rows of three",
+            "Drive zero-effect state is transparent; Preamp Drive and Distortion are separate paths",
+            "Compression Gain and Parallel blend are smoothed and post-branch",
+            "Independent Dry/Wet dB levels use smoothed gains and exact OFF mute",
+            "85 v0.5.8 parameter IDs preserved; Dry and Wet appended at indices 85 and 86",
+            "Unified Factory/User browser; exact protected User deletion",
+            "HELP tooltips contain Sound and How text; no permanent footer",
+            "Gain reduction fills downward while level meters fill upward",
+            "Two-pole 12 Hz processed-path blocker preserved"
+          ) | Set-Content BINARY_VALIDATION.txt
+
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item $vst3.FullName "package\Broken Machine.vst3" -Recurse
+          @(
+            "BROKEN MACHINE v0.5.9 - WINDOWS / FL STUDIO",
+            "",
+            "INSTALL",
+            "1. Close FL Studio before replacing an existing Broken Machine build.",
+            '2. Extract this ZIP and copy the entire "Broken Machine.vst3" folder to your VST3 location.',
+            '   The common system location is C:\Program Files\Common Files\VST3.',
+            "3. Re-open FL Studio and rescan plugins if needed.",
+            "",
+            "v0.5.9 INTERFACE",
+            "- Opens at exactly 1050 x 700 and remains resizable larger.",
+            "- Input and Output sit together; Drive/Reverb are 3 x 3; Compression is two rows of three.",
+            "- Compression: Gain, Parallel Compression, Threshold, Ratio, Attack and 1-4000 ms Release.",
+            "- Output: independent Dry and Wet dB levels plus Output. OFF is an exact mute.",
+            "- PRESETS opens organized Factory and User sections. Right-click a User preset for protected deletion.",
+            "- HELP enables floating Sound/How tooltips; the permanent help footer is gone.",
+            "- Inactive amount knobs gray and hide their zero value while remaining interactive.",
+            "",
+            "AUDIO AND COMPATIBILITY",
+            "- Zeroed Drive amounts add no hidden saturation or gain.",
+            "- Preamp Drive remains warm staged saturation; Distortion is a harder post-preamp path.",
+            "- Compression Gain is post-blend and does not alter Threshold or Ratio.",
+            "- Old linked Wet/Dry state migrates to equivalent independent gains.",
+            "- All 85 v0.5.8 parameter IDs retain their host indices; Dry and Wet are appended.",
+            "- Retired IDs remain loadable but do not drive their retired audio paths.",
+            "- The always-on two-pole 12 Hz processed-path blocker remains active."
+          ) | Set-Content "package\INSTALL.txt"
+          Copy-Item SOURCE_VALIDATION.txt "package\SOURCE_VALIDATION.txt"
+          Copy-Item BINARY_VALIDATION.txt "package\BINARY_VALIDATION.txt"
+          Copy-Item README.md "package\README.md"
+          Compress-Archive "package\*" "BrokenMachine-v0.5.9-Windows-VST3.zip" -Force
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $packageArchive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "BrokenMachine-v0.5.9-Windows-VST3.zip").Path)
+          try {
+            $compiledEntry = $packageArchive.Entries | Where-Object {
+              $_.FullName.Replace('\','/').Contains("Broken Machine.vst3/Contents/x86_64-win/") -and
+              ($_.Name -eq "Broken Machine.vst3" -or $_.Name.EndsWith(".dll"))
+            } | Select-Object -First 1
+            if (-not $compiledEntry -or $compiledEntry.Length -le 0) {
+              throw "Final install ZIP does not contain the compiled x86-64 VST3 binary"
+            }
+          } finally {
+            $packageArchive.Dispose()
+          }
+          Write-Host "Binary SHA-256: $binaryHash"
+
+      - name: Upload v0.5.9 plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrokenMachine-v0.5.9-Windows-VST3
+          path: source-root/BrokenMachine-v0.3/BrokenMachine-v0.5.9-Windows-VST3.zip
+          if-no-files-found: error
+          retention-days: 30
