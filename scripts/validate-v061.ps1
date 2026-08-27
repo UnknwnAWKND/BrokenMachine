@@ -47,6 +47,7 @@ try {
     'statusLabel.setText ("v0.6.1  /  PRESETS"',
     "hasUniformKnobSizesForTesting",
     "hasBalancedInputOutputLayoutForTesting",
+    "hasCleanOverlayForTesting",
     "getModuleTitleRailBounds",
     "juce::roundToInt (20.0f * scale)",
     "for (int row = 1; row < rowCount; ++row)",
@@ -184,7 +185,8 @@ try {
     "05-user-folder-night.png", "09-user-delete.png", "10-delete-confirmation.png",
     "11-vintage-125-percent.png", "12-night-150-percent.png", "1050, 800",
     "hasUniformKnobSizesForTesting", "hasBalancedInputOutputLayoutForTesting",
-    "Help must be off by default"
+    "hasCleanOverlayForTesting", "Help must be off by default",
+    "An underlying child component overlaps an active preset or modal panel"
   ) "visual validation"
 
   @(
