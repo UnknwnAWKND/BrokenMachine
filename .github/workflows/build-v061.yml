@@ -56,17 +56,17 @@ jobs:
           $zipPath = "v0.6.1-source-overlay.zip"
           $root = (Resolve-Path "source-root\BrokenMachine-v0.3").Path
           $transport = (Get-Content $payload -Raw).Trim()
-          if ($transport.Length -ne 56988) { throw "v0.6.1 payload length $($transport.Length), expected 56988" }
+          if ($transport.Length -ne 56696) { throw "v0.6.1 payload length $($transport.Length), expected 56696" }
           $transportHash = ([BitConverter]::ToString(
             [Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($transport))
           )).Replace('-','').ToLowerInvariant()
-          if ($transportHash -ne "52016b47719d393b7373a56e8d7b3dd50ca1cf96670557daff2170001e64a226") {
+          if ($transportHash -ne "10fafa6146c672877e667da6ec6921a5c188511dc7cd49608cb1670381562bbe") {
             throw "v0.6.1 transport hash mismatch: $transportHash"
           }
 
           [IO.File]::WriteAllBytes($zipPath, [Convert]::FromBase64String($transport))
           $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($zipHash -ne "eb58404d8c6923fa2fc3191f62976093d17e6674a001cf49fc9ede8569575af2") {
+          if ($zipHash -ne "81e4cad1a6011a77237de94887f01823da0b9586a01258c395be9be851daffec") {
             throw "v0.6.1 source ZIP hash mismatch: $zipHash"
           }
 
